@@ -463,7 +463,7 @@ def main():
         print(f"  Resumed at step {global_step}, episode {global_episode}")
 
     replay_loader = make_replay_loader(
-        replay_storage,
+        save_dir / "buffer",
         args.replay_buffer_size,
         args.batch_size,
         1,  # num_workers (keep low to avoid OOM from forked processes)
@@ -475,7 +475,7 @@ def main():
         fill_action="zero_action",
     )
     demo_replay_loader = make_replay_loader(
-        demo_replay_storage,
+        save_dir / "demo_buffer",
         args.replay_buffer_size,
         args.demo_batch_size,
         1,  # num_workers (keep low to avoid OOM from forked processes)
