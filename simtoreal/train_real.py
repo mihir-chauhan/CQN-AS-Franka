@@ -51,6 +51,8 @@ _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+import psutil  # for memory diagnostics
+
 import utils
 from logger import Logger
 from rlbench_src.cqn_as import CQNASAgent
@@ -71,6 +73,16 @@ from simtoreal.cameras import (
     make_wrist_only_rig,
 )
 from simtoreal.real_env import ExtendedTimeStepWrapper, RealFrankaEnv, make
+
+
+def _log_mem(label: str = ""):
+    """Print current process RSS memory usage."""
+    proc = psutil.Process()
+    rss_gb = proc.memory_info().rss / 1e9
+    sys_total = psutil.virtual_memory().total / 1e9
+    sys_avail = psutil.virtual_memory().available / 1e9
+    print(f"[MEM {label}] Process RSS: {rss_gb:.2f} GB | "
+          f"System: {sys_avail:.1f} / {sys_total:.1f} GB available")
 
 
 # ============================================================================
@@ -391,31 +403,13 @@ def main():
     # Rescale demo actions to [-1, 1]
     demos = [real_env.rescale_demo_actions(d) for d in demos]
     print(f"Action stats: min={action_stats['min']}, max={action_stats['max']}")
+    _log_mem("after loading/rescaling demos")
 
     # ------------------------------------------------------------------
-    # 3. Build agent
+    # 3. Flush demos into replay buffers and FREE memory before agent
     # ------------------------------------------------------------------
     print("=" * 60)
-    print("Building CQN-AS agent...")
-    agent = make_agent(env, args)
-
-    global_step = 0
-    global_episode = 0
-
-    if args.resume:
-        print(f"Resuming from {args.resume}...")
-        payload = torch.load(args.resume, map_location=args.device)
-        saved_agent = payload["agent"]
-        agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
-        agent.critic.load_state_dict(saved_agent.critic.state_dict())
-        agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
-        global_step = payload.get("_global_step", 0)
-        global_episode = payload.get("_global_episode", 0)
-        print(f"  Resumed at step {global_step}, episode {global_episode}")
-
-    # ------------------------------------------------------------------
-    # 4. Setup replay buffers
-    # ------------------------------------------------------------------
+    print("Setting up replay buffers and inserting demos...")
     data_specs = (
         env.rgb_raw_observation_spec(),
         env.low_dim_raw_observation_spec(),
@@ -439,8 +433,34 @@ def main():
     print(f"Loaded {len(replay_storage)} demo transitions into buffers")
 
     # Free demo data from memory — it's now persisted in the replay buffers
-    del demos
+    del demos, demo, ts
     import gc; gc.collect()
+    print("Demo data freed from memory.")
+    _log_mem("after freeing demos")
+
+    # ------------------------------------------------------------------
+    # 4. Build agent (now that demo memory is released)
+    # ------------------------------------------------------------------
+    print("=" * 60)
+    print("Building CQN-AS agent...")
+    agent = make_agent(env, args)
+    _log_mem("after building agent")
+
+    global_step = 0
+    global_episode = 0
+
+    if args.resume:
+        print(f"Resuming from {args.resume}...")
+        payload = torch.load(args.resume, map_location=args.device)
+        saved_agent = payload["agent"]
+        agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
+        agent.critic.load_state_dict(saved_agent.critic.state_dict())
+        agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
+        global_step = payload.get("_global_step", 0)
+        global_episode = payload.get("_global_episode", 0)
+        del payload, saved_agent
+        gc.collect()
+        print(f"  Resumed at step {global_step}, episode {global_episode}")
 
     replay_loader = make_replay_loader(
         replay_storage,
