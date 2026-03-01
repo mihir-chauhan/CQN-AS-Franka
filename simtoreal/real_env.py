@@ -176,6 +176,10 @@ class RealFrankaEnv:
         Safety clamp on per-step joint delta (rad).
     velocity_factor : float
         Fraction of max velocity for motions (0.0–1.0).
+    acceleration_factor : float
+        Fraction of max acceleration (0.0–1.0).
+    jerk_factor : float
+        Fraction of max jerk (0.0–1.0).
     action_stats_path : str or None
         Path to action_stats.npz with "min" and "max" arrays.
         If None, uses conservative ±0.05 rad default.
@@ -193,7 +197,9 @@ class RealFrankaEnv:
         frame_stack: int = 8,
         home_q: list | None = None,
         joint_delta_clip: float = 0.05,
-        velocity_factor: float = 0.15,
+        velocity_factor: float = 0.1,
+        acceleration_factor: float = 0.01,
+        jerk_factor: float = 0.01,
         action_stats_path: str | None = None,
         gripper_speed: float = 0.1,
         gripper_force: float = 20.0,
@@ -223,7 +229,7 @@ class RealFrankaEnv:
         self._robot = Robot(robot_ip)
         self._gripper = Gripper(robot_ip)
         self._robot.relative_dynamics_factor = RelativeDynamicsFactor(
-            velocity=velocity_factor, acceleration=0.05, jerk=0.05,
+            velocity=velocity_factor, acceleration=acceleration_factor, jerk=jerk_factor,
         )
         self._robot.set_collision_behavior(50, 50)
         self._robot.recover_from_errors()
@@ -585,7 +591,9 @@ def make(
     frame_stack: int = 8,
     home_q: list | None = None,
     joint_delta_clip: float = 0.05,
-    velocity_factor: float = 0.15,
+    velocity_factor: float = 0.1,
+    acceleration_factor: float = 0.01,
+    jerk_factor: float = 0.01,
     action_stats_path: str | None = None,
     gripper_speed: float = 0.1,
     gripper_force: float = 20.0,
@@ -598,6 +606,8 @@ def make(
         home_q=home_q,
         joint_delta_clip=joint_delta_clip,
         velocity_factor=velocity_factor,
+        acceleration_factor=acceleration_factor,
+        jerk_factor=jerk_factor,
         action_stats_path=action_stats_path,
         gripper_speed=gripper_speed,
         gripper_force=gripper_force,
