@@ -82,9 +82,10 @@ def parse_args():
                    default="full",
                    help="'full' = 4 RealSense cameras (recommended for eval), "
                         "'orbbec' = 4 Orbbec stereo cameras, "
-                        "'wrist' = wrist-only + zero-fill, "
+                        "'wrist' = wrist-only Orbbec + zero-fill, "
                         "'dummy' = all zero (dry-run only)")
-    p.add_argument("--wrist-serial", type=str, default=None)
+    p.add_argument("--wrist-serial", type=str, default=None,
+                   help="Orbbec serial for wrist camera (used in wrist mode)")
     p.add_argument("--camera-serials", type=str, default=None,
                    help='JSON dict: {"front":"SN1","wrist":"SN2",'
                         '"left_shoulder":"SN3","right_shoulder":"SN4"}')
@@ -142,7 +143,7 @@ def build_camera_rig(args):
 
     Camera positions to replicate from RLBench:
       - front:           ~1m in front of robot, chest height, facing robot
-      - wrist:           mounted on gripper (Intel RealSense recommended)
+      - wrist:           mounted on gripper (Orbbec)
       - left_shoulder:   ~0.5m above left shoulder, angled down at workspace
       - right_shoulder:  ~0.5m above right shoulder, angled down at workspace
     """
@@ -169,11 +170,12 @@ def build_camera_rig(args):
             camera_keys=CAMERA_KEYS,
         )
     elif args.camera_mode == "wrist":
-        print("[WARN] Wrist-only mode for eval — performance will be degraded.")
+        print("[WARN] Wrist-only mode (Orbbec) for eval — performance will be degraded.")
         return make_wrist_only_rig(
             serial=args.wrist_serial,
             height=args.camera_h, width=args.camera_w,
             camera_keys=CAMERA_KEYS,
+            use_orbbec=True,
         )
     else:
         print("[WARN] Dummy cameras — dry-run only, policy outputs will be random.")

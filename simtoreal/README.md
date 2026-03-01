@@ -70,7 +70,7 @@ pip install torch numpy dm-env gymnasium
 python -m simtoreal.train_real \
     --robot-ip 192.168.131.41 \
     --camera-mode wrist \
-    --wrist-serial <YOUR_REALSENSE_SERIAL> \
+    --wrist-serial <YOUR_ORBBEC_SERIAL> \
     --num-demos 10 \
     --demo-dir ./demos \
     --save-dir ./runs/real_train \
@@ -135,18 +135,21 @@ python -m simtoreal.eval_real \
 | Mode | Cameras active | Use case |
 |---|---|---|
 | `full` (default) | All 4: front, wrist, left_shoulder, right_shoulder | **Training & Eval** — best results |
-| `wrist` | wrist only; other 3 zero-filled | Degraded performance; only if you truly cannot mount other cameras |
+| `wrist` | wrist Orbbec only; other 3 zero-filled | Degraded performance; only if you truly cannot mount other cameras |
 | `dummy` | All zero-filled | Code testing without any hardware |
 
 > **Recommendation**: Always use `full` mode for both training and evaluation.
 > A policy trained with all 4 views will not perform well when some are missing.
 > If you can only afford 1 camera, retrain in sim with `camera_keys: [wrist]` first.
 
-### Finding RealSense serial numbers
+### Finding camera serial numbers
 
+**RealSense** (for `full` mode):
 ```bash
 rs-enumerate-devices | grep "Serial Number"
 ```
+
+**Orbbec** (for `wrist` mode): Use the Orbbec SDK or device manager to list connected Orbbec cameras and their serial numbers.
 
 ## Action Stats
 
