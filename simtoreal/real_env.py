@@ -293,10 +293,9 @@ class RealFrankaEnv:
 
         # Home robot
         self._robot.recover_from_errors()
-        time.sleep(0.5)
-        current_q = list(self._robot.current_joint_state.position)
+        time.sleep(1.0)  # let robot fully settle before planning
         motion = JointWaypointMotion(
-            [JointWaypoint(current_q), JointWaypoint(self._home_q)],
+            [JointWaypoint(self._home_q)],
             HALF_VEL,
         )
         try:
@@ -305,10 +304,9 @@ class RealFrankaEnv:
             print(f"[RealFrankaEnv] Homing failed: {e}")
             print("[RealFrankaEnv] Recovering and retrying...")
             self._robot.recover_from_errors()
-            time.sleep(1.0)
-            current_q = list(self._robot.current_joint_state.position)
+            time.sleep(2.0)
             motion = JointWaypointMotion(
-                [JointWaypoint(current_q), JointWaypoint(self._home_q)],
+                [JointWaypoint(self._home_q)],
                 HALF_VEL,
             )
             self._robot.move(motion)
@@ -346,16 +344,17 @@ class RealFrankaEnv:
         current_q = np.array(self._robot.current_joint_state.position, dtype=np.float64)
         target_q = current_q + joint_delta
 
-        # Execute joint motion
+        # Execute joint motion (single waypoint — franky handles current→target)
         try:
             motion = JointWaypointMotion(
-                [JointWaypoint(current_q.tolist()), JointWaypoint(target_q.tolist())],
+                [JointWaypoint(target_q.tolist())],
                 HALF_VEL,
             )
             self._robot.move(motion)
         except Exception as e:
             print(f"[RealFrankaEnv] Motion error: {e}")
             self._robot.recover_from_errors()
+            time.sleep(0.5)
 
         # Gripper
         if gripper_cmd > 0.5 and not self._gripper_is_open:

@@ -127,7 +127,8 @@ def parse_args():
     p.add_argument("--temporal-ensemble", action="store_true", default=True)
     p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--demo-batch-size", type=int, default=256)
-    p.add_argument("--replay-buffer-size", type=int, default=1000000)
+    p.add_argument("--replay-buffer-size", type=int, default=50000,
+                   help="Max replay buffer size. 50k is plenty for real-robot demos.")
     p.add_argument("--num-update-steps", type=int, default=1)
     p.add_argument("--eval-every", type=int, default=2500)
     p.add_argument("--num-eval-episodes", type=int, default=5)
@@ -437,11 +438,15 @@ def main():
             demo_replay_storage.add(ts)
     print(f"Loaded {len(replay_storage)} demo transitions into buffers")
 
+    # Free demo data from memory — it's now persisted in the replay buffers
+    del demos
+    import gc; gc.collect()
+
     replay_loader = make_replay_loader(
         replay_storage,
         args.replay_buffer_size,
         args.batch_size,
-        4,  # num_workers
+        1,  # num_workers (keep low to avoid OOM from forked processes)
         save_snapshot=False,
         nstep=1,
         discount=0.99,
@@ -453,7 +458,7 @@ def main():
         demo_replay_storage,
         args.replay_buffer_size,
         args.demo_batch_size,
-        4,
+        1,  # num_workers (keep low to avoid OOM from forked processes)
         save_snapshot=False,
         nstep=1,
         discount=0.99,
