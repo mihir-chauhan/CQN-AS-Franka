@@ -18,7 +18,7 @@ CAM_OFFT = np.array([0.065, 0.035, 0.044])
 SPEED = 0.1
 FORCE = 20
 
-HALF_VEL = RelativeDynamicsFactor(0.5, 1, 1)
+HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 
 
 def home_robot(robot, gripper, open_gripper: bool = True):
