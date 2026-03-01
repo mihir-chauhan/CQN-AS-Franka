@@ -153,7 +153,7 @@ DEFAULT_HOME_Q = [
     np.pi / 4,
 ]
 
-HALF_VEL = RelativeDynamicsFactor(0.5, 1, 1)
+HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 
 
 class RealFrankaEnv:
@@ -293,12 +293,25 @@ class RealFrankaEnv:
 
         # Home robot
         self._robot.recover_from_errors()
+        time.sleep(0.5)
         current_q = list(self._robot.current_joint_state.position)
         motion = JointWaypointMotion(
             [JointWaypoint(current_q), JointWaypoint(self._home_q)],
             HALF_VEL,
         )
-        self._robot.move(motion)
+        try:
+            self._robot.move(motion)
+        except Exception as e:
+            print(f"[RealFrankaEnv] Homing failed: {e}")
+            print("[RealFrankaEnv] Recovering and retrying...")
+            self._robot.recover_from_errors()
+            time.sleep(1.0)
+            current_q = list(self._robot.current_joint_state.position)
+            motion = JointWaypointMotion(
+                [JointWaypoint(current_q), JointWaypoint(self._home_q)],
+                HALF_VEL,
+            )
+            self._robot.move(motion)
         self._gripper.open(self._gripper_speed)
         self._gripper_is_open = True
         time.sleep(0.5)  # settle
