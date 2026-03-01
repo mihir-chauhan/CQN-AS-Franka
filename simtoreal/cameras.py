@@ -367,8 +367,8 @@ class CameraRig:
     The default RLBench training uses 4 views:
         ("front", "wrist", "left_shoulder", "right_shoulder")
 
-    For real deployment you might only have a wrist RealSense and fill the
-    other slots with DummyCamera.
+    For real deployment you might only have a wrist camera (Orbbec by default)
+    and fill the other slots with DummyCamera.
 
     Parameters
     ----------
@@ -413,10 +413,17 @@ def make_wrist_only_rig(
     height: int = CAMERA_H,
     width: int = CAMERA_W,
     camera_keys: tuple[str, ...] = CAMERA_KEYS,
+    use_orbbec: bool = True,
 ) -> CameraRig:
-    """Create a rig with only a wrist RealSense; other views are zero-filled."""
-    wrist = RealSenseCamera("wrist", serial=serial, height=height, width=width,
-                            stream_type="rgbd")
+    """Create a rig with only a wrist camera; other views are zero-filled.
+
+    By default uses Orbbec (use_orbbec=True). Set use_orbbec=False for RealSense.
+    """
+    if use_orbbec:
+        wrist = OrbbecCamera("wrist", serial=serial, height=height, width=width)
+    else:
+        wrist = RealSenseCamera("wrist", serial=serial, height=height, width=width,
+                                stream_type="rgbd")
     return CameraRig({"wrist": wrist}, camera_keys=camera_keys)
 
 

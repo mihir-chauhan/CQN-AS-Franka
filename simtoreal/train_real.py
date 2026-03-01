@@ -13,7 +13,7 @@ Usage
 -----
     python -m simtoreal.train_real \
         --robot-ip 192.168.131.41 \
-        --wrist-serial <REALSENSE_SERIAL> \
+        --wrist-serial <ORBBEC_SERIAL> \
         --num-demos 10 \
         --num-train-steps 50000 \
         --save-dir ./runs/real_train
@@ -27,7 +27,7 @@ Usage
 
 Camera modes
 ------------
-    --camera-mode wrist       Only wrist RealSense (other views zero-filled)
+    --camera-mode wrist       Only wrist Orbbec (other views zero-filled)
     --camera-mode full        All 4 cameras via RealSense (provide --camera-serials)
     --camera-mode dummy       All dummy cameras (for testing without hardware)
 """
@@ -93,10 +93,10 @@ def parse_args():
                    default="full",
                    help="'full' = 4 RealSense cameras, "
                         "'orbbec' = 4 Orbbec stereo cameras, "
-                        "'wrist' = wrist-only + zero-fill other 3 views, "
+                        "'wrist' = wrist-only Orbbec + zero-fill other 3 views, "
                         "'dummy' = all zero (code testing only)")
     p.add_argument("--wrist-serial", type=str, default=None,
-                   help="RealSense serial for wrist camera (used in wrist mode)")
+                   help="Orbbec serial for wrist camera (used in wrist mode)")
     p.add_argument("--camera-serials", type=str, default=None,
                    help='JSON dict mapping camera name → RealSense serial. '
                         'Keys: front, wrist, left_shoulder, right_shoulder. '
@@ -172,7 +172,7 @@ def build_camera_rig(args) -> CameraRig:
 
     Camera positions to replicate from RLBench:
       - front:           ~1m in front of robot, chest height, facing robot
-      - wrist:           mounted on gripper (Intel RealSense recommended)
+      - wrist:           mounted on gripper (Orbbec)
       - left_shoulder:   ~0.5m above left shoulder, angled down at workspace
       - right_shoulder:  ~0.5m above right shoulder, angled down at workspace
     """
@@ -201,12 +201,13 @@ def build_camera_rig(args) -> CameraRig:
             camera_keys=CAMERA_KEYS,
         )
     elif args.camera_mode == "wrist":
-        print("[WARN] Wrist-only mode: front, left_shoulder, right_shoulder "
+        print("[WARN] Wrist-only mode (Orbbec): front, left_shoulder, right_shoulder "
               "will be zero-filled. Policy quality will be degraded.")
         return make_wrist_only_rig(
             serial=args.wrist_serial,
             height=args.camera_h, width=args.camera_w,
             camera_keys=CAMERA_KEYS,
+            use_orbbec=True,
         )
     else:
         print("[WARN] Dummy camera mode: ALL views are zero-filled. "
