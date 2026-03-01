@@ -445,6 +445,7 @@ def main():
         save_snapshot=False,
         nstep=1,
         discount=0.99,
+        action_sequence=args.action_sequence,
         frame_stack=args.frame_stack,
         fill_action="zero_action",
     )
@@ -456,6 +457,7 @@ def main():
         save_snapshot=False,
         nstep=1,
         discount=0.99,
+        action_sequence=args.action_sequence,
         frame_stack=args.frame_stack,
         fill_action="zero_action",
     )
