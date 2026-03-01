@@ -1,0 +1,1 @@
+python train_real.py --camera-mode wrist --wrist-serial CL2E453000Y --num-demos 10 --save-dir ../runs/pick_cup_wrist --demo-dir ../runs/pick_cup_wrist/demos
