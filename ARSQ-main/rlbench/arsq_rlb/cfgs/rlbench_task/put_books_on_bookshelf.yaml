@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: put_books_on_bookshelf
+task_name_short: put_books
+episode_length: 175

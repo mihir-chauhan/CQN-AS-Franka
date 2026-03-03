@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: open_drawer
+task_name_short: open_drawer
+episode_length: 100

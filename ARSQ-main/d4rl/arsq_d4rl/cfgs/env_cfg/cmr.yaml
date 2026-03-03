@@ -1,0 +1,19 @@
+env: halfcheetah-medium-replay-v2
+env_short: cmr
+env_version: "v1"
+
+alg:
+  levels: 1
+  bins: 41
+
+  # sqar
+  soft_alpha: 0.01
+  act_alpha: ${alg.soft_alpha}
+  cql_min_q_weight: 0.1
+  cql_type: margin
+  cql_clip_diff_min: -1.0
+
+  # cqn
+  critic_lambda: 1.0
+  bc_lambda: 1.0
+  bc_fosd: 1.0

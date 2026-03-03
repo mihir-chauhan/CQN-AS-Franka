@@ -1,0 +1,6 @@
+.vscode
+.idea
+
+*.egg-info/
+thirdparty/*
+wandb/*
