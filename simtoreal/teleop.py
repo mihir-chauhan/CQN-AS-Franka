@@ -57,7 +57,8 @@ from franky import (
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
+TELEOP_VEL = RelativeDynamicsFactor(0.5, 0.25, 0.25)  # faster for teleop only
+HOME_VEL = RelativeDynamicsFactor(0.2, 0.1, 0.1)      # gentler for homing
 
 # Load home pose from image_45.npy
 _HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
@@ -65,12 +66,12 @@ HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
 # Step size per control tick (metres). At 10 Hz, speed ≈ step × 10.
 SPEED_PRESETS = {
-    "1": 0.005,   # 5 mm/tick   → ~5 cm/s
-    "2": 0.015,   # 15 mm/tick  → ~15 cm/s  (default)
-    "3": 0.030,   # 30 mm/tick  → ~30 cm/s
+    "1": 0.010,   # 10 mm/tick  → ~10 cm/s
+    "2": 0.025,   # 25 mm/tick  → ~25 cm/s  (default)
+    "3": 0.050,   # 50 mm/tick  → ~50 cm/s
 }
 
-ROTATION_STEP = 0.03  # radians/tick (~1.7°/tick → ~17°/s at 10 Hz)
+ROTATION_STEP = 0.08  # radians/tick (~4.6°/tick → ~46°/s at 10 Hz)
 
 GRIPPER_SPEED = 0.1   # m/s
 GRIPPER_FORCE = 20.0  # N
@@ -125,13 +126,13 @@ def main():
     print(f"Connecting to robot at {args.robot_ip}...")
     robot = Robot(args.robot_ip)
     gripper = Gripper(args.robot_ip)
-    robot.relative_dynamics_factor = HALF_VEL
+    robot.relative_dynamics_factor = TELEOP_VEL
     robot.set_collision_behavior(50, 50)
     robot.recover_from_errors()
 
     # Home
     print("Homing robot...")
-    motion = JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL)
+    motion = JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL)
     robot.move(motion)
     gripper.open(GRIPPER_SPEED)
     gripper_open = True
@@ -150,7 +151,7 @@ def main():
     print("  W/S  = forward/back    A/D  = left/right")
     print("  R/F  = up/down         Q/E  = rotate wrist")
     print("  SPACE = toggle gripper")
-    print("  1/2/3 = speed (5mm / 15mm / 30mm per tick)")
+    print("  1/2/3 = speed (10mm / 25mm / 50mm per tick)")
     print(f"  Control rate: {args.hz:.0f} Hz")
     print("  H = home               ESC or X = quit")
     print()
@@ -180,12 +181,12 @@ def main():
                     robot.recover_from_errors()
                     time.sleep(0.5)
                     try:
-                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL))
+                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL))
                     except Exception as ex:
                         print(f"  Homing failed: {ex}")
                         robot.recover_from_errors()
                         time.sleep(1.0)
-                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL))
+                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL))
                     print("  Home reached.")
                     continue
 
@@ -240,7 +241,7 @@ def main():
                         cart_motion = CartesianMotion(
                             Affine([dx, dy, dz]),
                             ReferenceType.Relative,
-                            HALF_VEL,
+                            TELEOP_VEL,
                         )
                         robot.move(cart_motion)
 
@@ -261,7 +262,7 @@ def main():
                         target_q = current_q.copy()
                         target_q[6] += dq7
                         motion = JointWaypointMotion(
-                            [JointWaypoint(target_q)], HALF_VEL
+                            [JointWaypoint(target_q)], TELEOP_VEL
                         )
                         robot.move(motion)
                     except Exception as ex:
