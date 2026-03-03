@@ -1,23 +1,26 @@
 """
-teleop.py — Keyboard teleoperation of the Franka Panda in Cartesian space.
+teleop.py — Continuous keyboard teleoperation of the Franka Panda.
 
-Controls (from the robot's perspective, facing the table):
-──────────────────────────────────────────────────────────
-  Movement:
+Hold keys to move continuously. The robot moves at a fixed control rate
+(default 10 Hz) with small Cartesian increments while a key is held.
+
+Controls (robot perspective, facing the table):
+────────────────────────────────────────────────
+  Movement (hold to move continuously):
     W / S     — forward / backward   (+X / -X)
-    A / D     — left / right          (-Y / +Y)
-    R / F     — up / down             (+Z / -Z)
+    A / D     — left / right         (-Y / +Y)
+    R / F     — up / down            (+Z / -Z)
 
-  Wrist rotation (last joint):
+  Wrist rotation (hold):
     Q / E     — rotate wrist CCW / CW
 
   Gripper:
     SPACE     — toggle gripper open / close
 
   Speed:
-    1         — slow   (1 cm steps)
-    2         — medium (3 cm steps)  [default]
-    3         — fast   (5 cm steps)
+    1         — slow   (2 mm/step  → ~2 cm/s at 10 Hz)
+    2         — medium (5 mm/step  → ~5 cm/s at 10 Hz) [default]
+    3         — fast   (10 mm/step → ~10 cm/s at 10 Hz)
 
   Other:
     H         — home the robot
@@ -25,12 +28,15 @@ Controls (from the robot's perspective, facing the table):
 
 Usage:
     python -m simtoreal.teleop
-    python -m simtoreal.teleop --robot-ip 192.168.131.41
+    python -m simtoreal.teleop --robot-ip 192.168.131.41 --hz 15
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
+import os
+import select
 import sys
 import termios
 import time
@@ -57,37 +63,62 @@ HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 _HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
 HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
+# Step size per control tick (metres). At 10 Hz, speed ≈ step × 10.
 SPEED_PRESETS = {
-    "1": 0.01,   # 1 cm
-    "2": 0.03,   # 3 cm  (default)
-    "3": 0.05,   # 5 cm
+    "1": 0.002,   # 2 mm/tick  → ~2 cm/s
+    "2": 0.005,   # 5 mm/tick  → ~5 cm/s  (default)
+    "3": 0.010,   # 10 mm/tick → ~10 cm/s
 }
 
-ROTATION_STEP = 0.05  # radians (~3°) per key press
+ROTATION_STEP = 0.01  # radians/tick (~0.6°/tick → ~6°/s at 10 Hz)
 
 GRIPPER_SPEED = 0.1   # m/s
 GRIPPER_FORCE = 20.0  # N
 
 
-# ── Keyboard helpers ─────────────────────────────────────────────────────────
+# ── Non-blocking keyboard ───────────────────────────────────────────────────
 
-def get_key() -> str:
-    """Read a single keypress from stdin (raw mode, no echo)."""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+class RawKeyboard:
+    """
+    Context manager that puts the terminal in raw mode and provides
+    non-blocking key reads.  Drains all buffered keys each call so
+    we get the *latest* held key, not a stale queue.
+    """
+
+    def __enter__(self):
+        self._fd = sys.stdin.fileno()
+        self._old = termios.tcgetattr(self._fd)
+        tty.setcbreak(self._fd)  # cbreak = char-at-a-time, signals still work
+        # Make stdin non-blocking
+        self._old_flags = fcntl.fcntl(self._fd, fcntl.F_GETFL)
+        fcntl.fcntl(self._fd, fcntl.F_SETFL, self._old_flags | os.O_NONBLOCK)
+        return self
+
+    def __exit__(self, *args):
+        fcntl.fcntl(self._fd, fcntl.F_SETFL, self._old_flags)
+        termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+
+    def get_keys(self) -> set[str]:
+        """Return all keys currently buffered (approximates 'held keys')."""
+        keys: set[str] = set()
+        try:
+            while True:
+                ch = sys.stdin.read(1)
+                if not ch:
+                    break
+                keys.add(ch.lower())
+        except (IOError, BlockingIOError):
+            pass
+        return keys
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Keyboard teleop for Franka Panda")
+    parser = argparse.ArgumentParser(description="Continuous keyboard teleop for Franka")
     parser.add_argument("--robot-ip", type=str, default="192.168.131.41")
+    parser.add_argument("--hz", type=float, default=10.0,
+                        help="Control loop rate (Hz)")
     args = parser.parse_args()
 
     # Connect
@@ -106,143 +137,146 @@ def main():
     gripper_open = True
     time.sleep(0.5)
 
-    step_m = 0.03  # default 3 cm steps
+    step_m = 0.005  # default 5 mm/tick
+    dt = 1.0 / args.hz
 
     print()
     print("=" * 60)
-    print("  FRANKA KEYBOARD TELEOP")
+    print("  FRANKA CONTINUOUS TELEOP")
     print("=" * 60)
+    print()
+    print("  HOLD keys to move continuously:")
     print()
     print("  W/S  = forward/back    A/D  = left/right")
     print("  R/F  = up/down         Q/E  = rotate wrist")
     print("  SPACE = toggle gripper")
-    print("  1/2/3 = step size (1cm / 3cm / 5cm)")
+    print("  1/2/3 = speed (2mm / 5mm / 10mm per tick)")
+    print(f"  Control rate: {args.hz:.0f} Hz")
     print("  H = home               ESC or X = quit")
     print()
-    print(f"  Step size: {step_m * 100:.0f} cm")
-    print(f"  Gripper: {'OPEN' if gripper_open else 'CLOSED'}")
+    print(f"  Speed: {step_m * 1000:.0f} mm/tick ({step_m * args.hz * 100:.0f} cm/s)")
+    print(f"  Gripper: OPEN")
     print()
-    print("  Ready! Press a key...")
+    print("  Ready! Hold a movement key...")
     print()
 
-    try:
-        while True:
-            key = get_key().lower()
+    last_print_time = 0.0
+    gripper_toggled = False  # debounce
 
-            dx, dy, dz = 0.0, 0.0, 0.0
-            dq7 = 0.0  # wrist rotation delta (joint 7)
-            action = None
+    with RawKeyboard() as kb:
+        try:
+            while True:
+                t0 = time.time()
+                keys = kb.get_keys()
 
-            # ── Movement ──
-            if key == "w":
-                dx = step_m
-                action = "forward"
-            elif key == "s":
-                dx = -step_m
-                action = "backward"
-            elif key == "a":
-                dy = -step_m
-                action = "left"
-            elif key == "d":
-                dy = step_m
-                action = "right"
-            elif key == "r":
-                dz = step_m
-                action = "up"
-            elif key == "f":
-                dz = -step_m
-                action = "down"
+                # ── Quit ──
+                if "\x1b" in keys or "x" in keys:
+                    print("\n  Quitting...")
+                    break
 
-            # ── Wrist rotation ──
-            elif key == "q":
-                dq7 = -ROTATION_STEP
-                action = "rotate CCW"
-            elif key == "e":
-                dq7 = ROTATION_STEP
-                action = "rotate CW"
+                # ── Home ──
+                if "h" in keys:
+                    print("  🏠 Homing...")
+                    robot.recover_from_errors()
+                    time.sleep(0.5)
+                    try:
+                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL))
+                    except Exception as ex:
+                        print(f"  Homing failed: {ex}")
+                        robot.recover_from_errors()
+                        time.sleep(1.0)
+                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL))
+                    print("  Home reached.")
+                    continue
 
-            # ── Gripper toggle ──
-            elif key == " ":
-                if gripper_open:
-                    print("  ✊ Gripper CLOSING...")
-                    gripper.grasp(
-                        0.0, GRIPPER_SPEED, GRIPPER_FORCE,
-                        epsilon_inner=1.0, epsilon_outer=1.0,
-                    )
-                    gripper_open = False
+                # ── Speed presets ──
+                for k, v in SPEED_PRESETS.items():
+                    if k in keys:
+                        step_m = v
+                        print(f"  Speed: {step_m * 1000:.0f} mm/tick "
+                              f"({step_m * args.hz * 100:.0f} cm/s)")
+
+                # ── Gripper toggle (with debounce) ──
+                if " " in keys:
+                    if not gripper_toggled:
+                        gripper_toggled = True
+                        if gripper_open:
+                            print("  ✊ Gripper CLOSING...")
+                            gripper.grasp(
+                                0.0, GRIPPER_SPEED, GRIPPER_FORCE,
+                                epsilon_inner=1.0, epsilon_outer=1.0,
+                            )
+                            gripper_open = False
+                        else:
+                            print("  🖐  Gripper OPENING...")
+                            gripper.open(GRIPPER_SPEED)
+                            gripper_open = True
                 else:
-                    print("  🖐  Gripper OPENING...")
-                    gripper.open(GRIPPER_SPEED)
-                    gripper_open = True
-                continue
+                    gripper_toggled = False
 
-            # ── Speed presets ──
-            elif key in SPEED_PRESETS:
-                step_m = SPEED_PRESETS[key]
-                print(f"  Step size: {step_m * 100:.0f} cm")
-                continue
+                # ── Accumulate movement from held keys ──
+                dx, dy, dz, dq7 = 0.0, 0.0, 0.0, 0.0
 
-            # ── Home ──
-            elif key == "h":
-                print("  🏠 Homing...")
-                robot.recover_from_errors()
-                time.sleep(0.5)
-                motion = JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL)
-                try:
-                    robot.move(motion)
-                except Exception as ex:
-                    print(f"  Homing failed: {ex}")
-                    robot.recover_from_errors()
-                    time.sleep(1.0)
-                    robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HALF_VEL))
-                print("  Home reached.")
-                continue
+                if "w" in keys:
+                    dx += step_m
+                if "s" in keys:
+                    dx -= step_m
+                if "a" in keys:
+                    dy -= step_m
+                if "d" in keys:
+                    dy += step_m
+                if "r" in keys:
+                    dz += step_m
+                if "f" in keys:
+                    dz -= step_m
+                if "q" in keys:
+                    dq7 -= ROTATION_STEP
+                if "e" in keys:
+                    dq7 += ROTATION_STEP
 
-            # ── Quit ──
-            elif key == "\x1b" or key == "x":  # ESC or x
-                print("\n  Quitting...")
-                break
+                # ── Execute Cartesian motion ──
+                if dx != 0.0 or dy != 0.0 or dz != 0.0:
+                    try:
+                        cart_motion = CartesianMotion(
+                            Affine([dx, dy, dz]),
+                            ReferenceType.Relative,
+                            HALF_VEL,
+                        )
+                        robot.move(cart_motion)
 
-            else:
-                # Unknown key — ignore
-                continue
+                        # Print position at ~2 Hz to avoid spam
+                        now = time.time()
+                        if now - last_print_time > 0.5:
+                            pos = robot.current_cartesian_state.pose.end_effector_pose.translation
+                            print(f"  pos: x={pos[0]:.3f}  y={pos[1]:.3f}  z={pos[2]:.3f}")
+                            last_print_time = now
+                    except Exception as ex:
+                        robot.recover_from_errors()
+                        time.sleep(0.1)
 
-            # ── Execute Cartesian motion ──
-            if dx != 0.0 or dy != 0.0 or dz != 0.0:
-                try:
-                    cart_motion = CartesianMotion(
-                        Affine([dx, dy, dz]),
-                        ReferenceType.Relative,
-                        HALF_VEL,
-                    )
-                    robot.move(cart_motion)
-                    pos = robot.current_cartesian_state.pose.end_effector_pose.translation
-                    print(f"  → {action:10s}  |  pos: x={pos[0]:.3f}  y={pos[1]:.3f}  z={pos[2]:.3f}")
-                except Exception as ex:
-                    print(f"  ⚠ Motion error ({action}): {ex}")
-                    robot.recover_from_errors()
-                    time.sleep(0.3)
+                # ── Execute wrist rotation ──
+                if dq7 != 0.0:
+                    try:
+                        current_q = list(robot.current_joint_state.position)
+                        target_q = current_q.copy()
+                        target_q[6] += dq7
+                        motion = JointWaypointMotion(
+                            [JointWaypoint(target_q)], HALF_VEL
+                        )
+                        robot.move(motion)
+                    except Exception as ex:
+                        robot.recover_from_errors()
+                        time.sleep(0.1)
 
-            # ── Execute wrist rotation (joint-space for last joint only) ──
-            elif dq7 != 0.0:
-                try:
-                    current_q = list(robot.current_joint_state.position)
-                    target_q = current_q.copy()
-                    target_q[6] += dq7
-                    motion = JointWaypointMotion(
-                        [JointWaypoint(target_q)], HALF_VEL
-                    )
-                    robot.move(motion)
-                    print(f"  → {action:10s}  |  joint7: {target_q[6]:.3f} rad")
-                except Exception as ex:
-                    print(f"  ⚠ Rotation error: {ex}")
-                    robot.recover_from_errors()
-                    time.sleep(0.3)
+                # ── Control rate ──
+                elapsed = time.time() - t0
+                if elapsed < dt:
+                    time.sleep(dt - elapsed)
 
-    except KeyboardInterrupt:
-        print("\n  Interrupted.")
-    finally:
-        print("  Done.")
+        except KeyboardInterrupt:
+            print("\n  Interrupted.")
+        finally:
+            print("  Done.")
 
 
 if __name__ == "__main__":
