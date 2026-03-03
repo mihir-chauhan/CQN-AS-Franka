@@ -10,3 +10,19 @@ python -m simtoreal.train_real \
     --demo-dir ./runs/4cam_run/demos \
     --num-train-steps 100000 \
     --save-dir ./runs/4cam_run_v2
+
+
+Traceback (most recent call last):
+  File "/home/bera/CQN-AS-Franka/simtoreal/train_real.py", line 669, in <module>
+    main()
+  File "/home/bera/CQN-AS-Franka/simtoreal/train_real.py", line 580, in main
+    metrics = agent.update(batch)
+  File "/home/bera/CQN-AS-Franka/rlbench_src/cqn_as.py", line 821, in update
+    rgb_obs = self.encoder(rgb_obs)
+  File "/home/bera/anaconda3/envs/franka/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1773, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/bera/anaconda3/envs/franka/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1784, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/bera/CQN-AS-Franka/rlbench_src/cqn_as.py", line 94, in forward
+    obs = obs / 255.0 - 0.5
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.29 GiB. GPU 0 has a total capacity of 7.65 GiB of which 643.38 MiB is free. Process 20298 has 77.74 MiB memory in use. Including non-PyTorch memory, this process has 6.67 GiB memory in use. Of the allocated memory 6.55 GiB is allocated by PyTorch, and 28.24 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
