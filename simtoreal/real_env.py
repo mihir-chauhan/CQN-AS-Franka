@@ -142,16 +142,9 @@ class ExtendedTimeStepWrapper:
 # Main environment
 # ============================================================================
 
-# Sensible default home pose  (same as IMAGE_Q from franka.py)
-DEFAULT_HOME_Q = [
-    -np.pi / 4,
-    -np.pi / 4,
-    0.0,
-    -3 * np.pi / 4,
-    0.0,
-    np.pi / 2,
-    np.pi / 4,
-]
+# Load home pose from image_45.npy (the tested home position)
+_HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
+DEFAULT_HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
 HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 
