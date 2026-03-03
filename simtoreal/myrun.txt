@@ -1,2 +1,12 @@
- 1545  python train_real.py --camera-mode wrist --wrist-serial CL2E453000Y --load-demos-only --save-dir ../runs/pick_cup_wrist --demo-dir ../runs/pick_cup_wrist/demos
+python train_real.py --camera-mode wrist --wrist-serial CL2E453000Y --load-demos-only --save-dir ../runs/pick_cup_wrist --demo-dir ../runs/pick_cup_wrist/demos
 
+
+
+python -m simtoreal.train_real \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"SERIAL1","wrist":"SERIAL2","left_shoulder":"SERIAL3","right_shoulder":"SERIAL4"}' \
+    --load-demos-only \
+    --demo-dir ./runs/4cam_run/demos \
+    --num-train-steps 100000 \
+    --save-dir ./runs/4cam_run_v2
