@@ -148,6 +148,20 @@ DEFAULT_HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
 HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 
+# ---------------------------------------------------------------------------
+# Safety limits
+# ---------------------------------------------------------------------------
+
+# Panda joint position limits (radians) — from Franka documentation
+PANDA_JOINT_MIN = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
+PANDA_JOINT_MAX = np.array([ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973])
+
+# Cartesian workspace box (metres, in robot base frame).
+# Only the z lower bound is enforced (table surface).
+# *** TUNE THESE FOR YOUR SETUP using teleop EE readouts ***
+WORKSPACE_MIN = np.array([-10.0, -10.0,  0.266])  # only z_min matters (table height)
+WORKSPACE_MAX = np.array([ 10.0,  10.0,  10.0 ])  # no upper bound enforced
+
 
 class RealFrankaEnv:
     """
@@ -328,7 +342,7 @@ class RealFrankaEnv:
         joint_delta = raw[:7]
         gripper_cmd = raw[7]
 
-        # Safety clamp
+        # Safety clamp on delta
         joint_delta = np.clip(
             joint_delta, -self._joint_delta_clip, self._joint_delta_clip
         )
@@ -336,6 +350,26 @@ class RealFrankaEnv:
         # Compute target joint positions
         current_q = np.array(self._robot.current_joint_state.position, dtype=np.float64)
         target_q = current_q + joint_delta
+
+        # ── Safety: clamp to joint limits ──
+        target_q = self._clamp_joint_limits(target_q)
+
+        # ── Safety: check workspace bounds BEFORE moving ──
+        ee_pos = self._get_ee_position()
+        if ee_pos is not None and self._is_outside_workspace(ee_pos):
+            print(f"[SAFETY] Workspace violation! EE={ee_pos.round(3)} "
+                  f"Bounds=[{WORKSPACE_MIN}, {WORKSPACE_MAX}]")
+            print("[SAFETY] Ending episode and homing.")
+            self._step_counter = self._episode_length  # force truncation
+            obs = self._get_obs()
+            return TimeStep(
+                rgb_obs=obs["rgb_obs"],
+                low_dim_obs=obs["low_dim_obs"],
+                step_type=StepType.LAST,
+                reward=0.0,
+                discount=0.0,
+                demo=0.0,
+            )
 
         # Execute joint motion (single waypoint — franky handles current→target)
         try:
@@ -365,13 +399,18 @@ class RealFrankaEnv:
 
         self._step_counter += 1
 
+        # ── Safety: check workspace bounds AFTER moving ──
+        ee_pos_after = self._get_ee_position()
+        workspace_violation = (ee_pos_after is not None and
+                               self._is_outside_workspace(ee_pos_after))
+        if workspace_violation:
+            print(f"[SAFETY] Post-move workspace violation! EE={ee_pos_after.round(3)}")
+
         # Observe
         obs = self._get_obs()
 
-        # Truncation
-        truncated = self._step_counter >= self._episode_length
-        # On the real robot we don't have automatic success detection,
-        # so terminated is always False (reward must come from external signal)
+        # Truncation (normal OR safety)
+        truncated = (self._step_counter >= self._episode_length) or workspace_violation
         terminated = False
 
         if terminated or truncated:
@@ -384,7 +423,7 @@ class RealFrankaEnv:
             rgb_obs=obs["rgb_obs"],
             low_dim_obs=obs["low_dim_obs"],
             step_type=step_type,
-            reward=0.0,  # override externally if needed
+            reward=0.0,
             discount=discount,
             demo=0.0,
         )
@@ -525,6 +564,34 @@ class RealFrankaEnv:
             "max": np.array([0.05] * 7 + [1.0], dtype=np.float32),
         }
 
+    # ── Safety helpers ─────────────────────────────────────────────────
+    def _get_ee_position(self) -> np.ndarray | None:
+        """Return the current end-effector (flange) position [x, y, z]."""
+        try:
+            pose = self._robot.current_cartesian_state.pose
+            # franky Affine → 4×4 homogeneous matrix
+            T = np.array(pose.matrix())
+            return T[:3, 3].copy()
+        except Exception as e:
+            print(f"[SAFETY] Could not read EE pose: {e}")
+            return None
+
+    @staticmethod
+    def _is_outside_workspace(ee_pos: np.ndarray) -> bool:
+        """True if *any* coordinate is outside the safe box."""
+        return bool(
+            np.any(ee_pos < WORKSPACE_MIN) or np.any(ee_pos > WORKSPACE_MAX)
+        )
+
+    @staticmethod
+    def _clamp_joint_limits(target_q: np.ndarray) -> np.ndarray:
+        """Clamp target joints to Panda limits (with small margin)."""
+        margin = 0.02  # ~1 deg buffer from hard stops
+        lo = PANDA_JOINT_MIN + margin
+        hi = PANDA_JOINT_MAX - margin
+        return np.clip(target_q, lo, hi)
+
+    # ── Action conversions ───────────────────────────────────────────
     def _convert_action_to_raw(self, action: np.ndarray) -> np.ndarray:
         """[-1, 1] → raw joint deltas + gripper  (same as rlbench_env)."""
         action = np.clip(action, -1.0, 1.0)
