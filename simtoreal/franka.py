@@ -1,19 +1,13 @@
 import time
+from pathlib import Path
 from franky import *
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-# HOME_Q = [0., -np.pi/4, 0., -3*np.pi/4, 0., np.pi/2, np.pi/4] # real home
-HOME_Q = [
-    -np.pi / 4,
-    -np.pi / 4,
-    0.0,
-    -3 * np.pi / 4,
-    0.0,
-    np.pi / 2,
-    np.pi / 4,
-] # home turned towards table
-IMAGE_Q = np.load("positions/image_45.npy")
+# Load home pose from image_45.npy (single source of truth)
+_HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
+HOME_Q = np.load(str(_HOME_NPY)).tolist()
+IMAGE_Q = HOME_Q  # alias for backwards compatibility
 CAM_OFFT = np.array([0.065, 0.035, 0.044])
 SPEED = 0.1
 FORCE = 20

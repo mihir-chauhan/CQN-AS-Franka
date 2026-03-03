@@ -35,6 +35,7 @@ import sys
 import termios
 import time
 import tty
+from pathlib import Path
 
 import numpy as np
 from franky import (
@@ -52,16 +53,9 @@ from franky import (
 
 HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
 
-# Same home pose as franka.py / real_env.py
-HOME_Q = [
-    -np.pi / 4,
-    -np.pi / 4,
-    0.0,
-    -3 * np.pi / 4,
-    0.0,
-    np.pi / 2,
-    np.pi / 4,
-]
+# Load home pose from image_45.npy
+_HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
+HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
 SPEED_PRESETS = {
     "1": 0.01,   # 1 cm
