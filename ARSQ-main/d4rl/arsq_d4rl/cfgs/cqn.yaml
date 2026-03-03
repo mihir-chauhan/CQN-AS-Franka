@@ -1,0 +1,66 @@
+defaults:
+  - _self_
+  - env_cfg@_global_: ph
+
+seed: 0
+
+model_path: ""
+
+batch_size: 512
+
+reward_scale: 1.0
+reward_bias: 0.0
+clip_action: 0.99999
+
+render_num: 1
+
+n_train_step_per_epoch_offline: 1000
+n_pretrain_epochs: 0 # 500
+offline_eval_every_n_epoch: 10 # 50
+
+max_online_env_steps: 500000 # 0
+online_eval_every_n_env_steps: 2000
+
+eval_n_trajs: 10 # default 5
+replay_buffer_size: 1000000
+mixing_ratio: 0.5 # default -1.0
+
+n_online_traj_per_epoch: 1
+online_utd_ratio: 1
+
+discount: 0.99
+demo_percentile: 0
+demo_ratio: 100.0
+demo_only: false
+demo_relabel: false
+
+alg:
+  name: cqn
+  discount: ${discount}
+
+  lr: 1e-4
+  weight_decay: 0.0
+  critic_target_tau: 0.005
+  num_expl_steps: 2000
+  feature_dim: 64
+  hidden_dim: 512
+  levels: 3
+  bins: 5
+  atoms: 51
+  v_min: 0
+  v_max: 4000 # 200
+  stddev_schedule: 0.1
+
+  bc_lambda: 1.0
+  bc_fosd: 1.0
+  bc_margin: 1.0
+  critic_lambda: 0.1
+
+
+wandb:
+  project: arsq_d4rl
+  name: "cqn"
+
+hydra:
+  run:
+    dir: ./arsq_d4rl/exp_local/cqn/${env}/${now:%Y}_${now:%m%d}_${now:%H%M}_${now:%S}

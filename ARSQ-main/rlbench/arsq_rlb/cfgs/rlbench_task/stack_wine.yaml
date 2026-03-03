@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: stack_wine
+task_name_short: stack_wine
+episode_length: 150

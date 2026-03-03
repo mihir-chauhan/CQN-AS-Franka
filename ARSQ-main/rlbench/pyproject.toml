@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arsq_rlb"
+version = "0.1"
+dependencies = [
+    "termcolor==2.4.0",
+    "imageio==2.34.1",
+    "imageio_ffmpeg==0.5.1",
+    "hydra-core==1.1.0",
+    "hydra-submitit-launcher==1.1.5",
+    "opencv-python-headless==4.10.0.82",
+    "numpy==1.26.4",
+    "tensorboard",
+    "dm_env==1.6",
+    "dm_control==1.0.20",
+    "gymnasium==0.29.1",
+    "wandb",
+]
+
+[tool.setuptools]
+packages = ["arsq_rlb"]

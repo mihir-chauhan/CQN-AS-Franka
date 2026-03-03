@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: open_door
+task_name_short: open_door
+episode_length: 125

@@ -1,0 +1,19 @@
+env: hopper-medium-replay-v2
+env_short: hmr
+env_version: "v1"
+
+alg:
+  levels: 2
+  bins: 7
+
+  # sqar
+  soft_alpha: 0.01
+  act_alpha: ${alg.soft_alpha}
+  cql_min_q_weight: 0.03
+  cql_clip_diff_min: 1.0
+  cql_type: margin
+
+  # cqn
+  critic_lambda: 1.0
+  bc_lambda: 1.0
+  bc_fosd: 1.0

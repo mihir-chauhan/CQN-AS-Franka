@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: pick_up_cup
+task_name_short: pick_up_cup
+episode_length: 100

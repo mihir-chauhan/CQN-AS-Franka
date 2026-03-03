@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: turn_tap
+task_name_short: turn_tap
+episode_length: 125

@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arsq_d4rl"
+version = "0.1"
+dependencies = [
+    "hydra-core",
+    "wandb"
+]
+
+[tool.setuptools]
+packages = ["arsq_d4rl"]

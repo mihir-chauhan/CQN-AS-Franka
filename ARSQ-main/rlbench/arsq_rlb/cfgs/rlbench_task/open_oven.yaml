@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: open_oven
+task_name_short: open_oven
+episode_length: 225

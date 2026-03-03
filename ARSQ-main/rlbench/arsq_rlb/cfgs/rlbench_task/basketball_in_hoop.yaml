@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: basketball_in_hoop
+task_name_short: basketball
+episode_length: 125
