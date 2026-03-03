@@ -65,12 +65,12 @@ HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
 # Step size per control tick (metres). At 10 Hz, speed ≈ step × 10.
 SPEED_PRESETS = {
-    "1": 0.002,   # 2 mm/tick  → ~2 cm/s
-    "2": 0.005,   # 5 mm/tick  → ~5 cm/s  (default)
-    "3": 0.010,   # 10 mm/tick → ~10 cm/s
+    "1": 0.005,   # 5 mm/tick   → ~5 cm/s
+    "2": 0.015,   # 15 mm/tick  → ~15 cm/s  (default)
+    "3": 0.030,   # 30 mm/tick  → ~30 cm/s
 }
 
-ROTATION_STEP = 0.01  # radians/tick (~0.6°/tick → ~6°/s at 10 Hz)
+ROTATION_STEP = 0.03  # radians/tick (~1.7°/tick → ~17°/s at 10 Hz)
 
 GRIPPER_SPEED = 0.1   # m/s
 GRIPPER_FORCE = 20.0  # N
@@ -137,7 +137,7 @@ def main():
     gripper_open = True
     time.sleep(0.5)
 
-    step_m = 0.005  # default 5 mm/tick
+    step_m = 0.015  # default 15 mm/tick
     dt = 1.0 / args.hz
 
     print()
@@ -150,7 +150,7 @@ def main():
     print("  W/S  = forward/back    A/D  = left/right")
     print("  R/F  = up/down         Q/E  = rotate wrist")
     print("  SPACE = toggle gripper")
-    print("  1/2/3 = speed (2mm / 5mm / 10mm per tick)")
+    print("  1/2/3 = speed (5mm / 15mm / 30mm per tick)")
     print(f"  Control rate: {args.hz:.0f} Hz")
     print("  H = home               ESC or X = quit")
     print()
