@@ -12,14 +12,14 @@ python -m simtoreal.train_real \
     --save-dir ./runs/4cam_run_v2
 
 
-python -m simtoreal.train_real \
+python train_real.py \
     --robot-ip 192.168.131.41 \
     --camera-mode orbbec \
-    --orbbec-serials '{"front":"SERIAL1","wrist":"SERIAL2","left_shoulder":"SERIAL3","right_shoulder":"SERIAL4"}' \
+    --orbbec-serials '{"front":"CL2E4530083","wrist":"CL2E453000Y","left_shoulder":"CL25854009Y","right_shoulder":"CL25854007B"}' \
     --load-demos-only \
-    --demo-dir ./runs/4cam_run/demos \
+    --demo-dir ../runs/pick_mouse_4/demos \
     --num-train-steps 100000 \
-    --save-dir ./runs/4cam_run_v2 \
+    --save-dir ../runs/pick_mouse_4 \
     --batch-size 32 \
     --demo-batch-size 32
 
