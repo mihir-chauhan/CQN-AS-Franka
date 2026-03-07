@@ -1,5 +1,5 @@
 """
-eval_real.py — Evaluate a trained CQN-AS checkpoint on a real Franka Panda.
+eval_real.py — Evaluate a trained CQN-AS or ARSQ checkpoint on a real Franka Panda.
 
 This script:
   1. Connects to the robot + camera rig.
@@ -8,7 +8,9 @@ This script:
 
 Usage
 -----
+    # CQN-AS eval (default):
     python -m simtoreal.eval_real \
+        --agent cqn \
         --robot-ip 192.168.131.41 \
         --snapshot ./runs/real_train/snapshot.pt \
         --action-stats ./runs/real_train/action_stats.npz \
@@ -16,11 +18,12 @@ Usage
         --camera-serials '{"front":"SN1","wrist":"SN2","left_shoulder":"SN3","right_shoulder":"SN4"}' \
         --num-episodes 10
 
-    # Wrist-only eval:
+    # ARSQ eval:
     python -m simtoreal.eval_real \
+        --agent arsq \
         --robot-ip 192.168.131.41 \
-        --snapshot ./runs/real_train/snapshot.pt \
-        --action-stats ./runs/real_train/action_stats.npz \
+        --snapshot ./runs/real_train_arsq/snapshot.pt \
+        --action-stats ./runs/real_train_arsq/action_stats.npz \
         --camera-mode wrist \
         --wrist-serial <SERIAL> \
         --num-episodes 10
@@ -51,6 +54,7 @@ if _PROJECT_ROOT not in sys.path:
 
 import utils
 from rlbench_src.cqn_as import CQNASAgent
+from arsq_src.sqar import SQARAgent
 
 from simtoreal.cameras import (
     CAMERA_H,
@@ -66,7 +70,15 @@ from simtoreal.real_env import ExtendedTimeStepWrapper, make
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Evaluate CQN-AS on real Franka Panda")
+    p = argparse.ArgumentParser(
+        description="Evaluate CQN-AS or ARSQ on real Franka Panda"
+    )
+
+    # Agent selection
+    p.add_argument("--agent", choices=["cqn", "arsq"], default="cqn",
+                   help="'cqn' = CQN-AS (action sequences), "
+                        "'arsq' = SQAR (single-step). "
+                        "Auto-detected from snapshot if saved with agent_type.")
 
     # Robot
     p.add_argument("--robot-ip", type=str, default="192.168.131.41")
@@ -113,20 +125,25 @@ def parse_args():
     p.add_argument("--control-hz", type=float, default=10.0)
     p.add_argument("--device", type=str, default="cuda")
 
-    # Agent hyperparams (must match training config)
+    # Agent hyperparams — shared
     p.add_argument("--lr", type=float, default=5e-5)
     p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument("--feature-dim", type=int, default=64)
     p.add_argument("--hidden-dim", type=int, default=512)
     p.add_argument("--levels", type=int, default=3)
     p.add_argument("--bins", type=int, default=5)
+    p.add_argument("--critic-target-tau", type=float, default=0.02)
+
+    # CQN-AS specific
     p.add_argument("--atoms", type=int, default=51)
     p.add_argument("--v-min", type=float, default=-2.0)
     p.add_argument("--v-max", type=float, default=2.0)
     p.add_argument("--bc-lambda", type=float, default=1.0)
     p.add_argument("--bc-margin", type=float, default=0.01)
     p.add_argument("--critic-lambda", type=float, default=0.1)
-    p.add_argument("--critic-target-tau", type=float, default=0.02)
+
+    # ARSQ specific
+    p.add_argument("--soft-alpha", type=float, default=0.001)
 
     # Misc
     p.add_argument("--dry-run", action="store_true",
@@ -185,48 +202,88 @@ def build_camera_rig(args):
         )
 
 
-def make_agent_from_snapshot(env: ExtendedTimeStepWrapper, args) -> CQNASAgent:
-    """Build agent with correct shapes and load weights from snapshot."""
+def make_agent_from_snapshot(env: ExtendedTimeStepWrapper, args):
+    """Build agent with correct shapes and load weights from snapshot.
+
+    Works for both CQN-AS and ARSQ. If the snapshot contains 'agent_type',
+    that overrides the --agent flag.
+    """
+    payload = torch.load(args.snapshot, map_location=args.device)
+
+    # Auto-detect agent type from snapshot if available
+    saved_type = payload.get("agent_type", None)
+    if saved_type is not None and saved_type != args.agent:
+        print(f"[Eval] Snapshot was saved with agent_type='{saved_type}', "
+              f"overriding --agent={args.agent}")
+        args.agent = saved_type
+
+    use_cqn = args.agent == "cqn"
+
+    # ARSQ doesn't use action sequences or temporal ensemble
+    if not use_cqn:
+        args.action_sequence = 1
+        args.temporal_ensemble = False
+
     rgb_spec = env.rgb_observation_spec()
     low_dim_spec = env.low_dim_observation_spec()
     action_spec = env.action_spec()
-    action_shape = (args.action_sequence, *action_spec.shape)
 
-    agent = CQNASAgent(
-        rgb_obs_shape=rgb_spec.shape,
-        low_dim_obs_shape=low_dim_spec.shape,
-        action_shape=action_shape,
-        device=args.device,
-        lr=args.lr,
-        feature_dim=args.feature_dim,
-        hidden_dim=args.hidden_dim,
-        levels=args.levels,
-        bins=args.bins,
-        atoms=args.atoms,
-        v_min=args.v_min,
-        v_max=args.v_max,
-        bc_lambda=args.bc_lambda,
-        bc_margin=args.bc_margin,
-        gru_layers=1,
-        rgb_encoder_layers=0,
-        use_parallel_impl=False,
-        critic_lambda=args.critic_lambda,
-        critic_target_tau=args.critic_target_tau,
-        critic_target_interval=1,
-        weight_decay=args.weight_decay,
-        num_expl_steps=0,
-        update_every_steps=1,
-        stddev_schedule="0.0",  # no exploration noise for eval
-    )
+    if use_cqn:
+        action_shape = (args.action_sequence, *action_spec.shape)
+        agent = CQNASAgent(
+            rgb_obs_shape=rgb_spec.shape,
+            low_dim_obs_shape=low_dim_spec.shape,
+            action_shape=action_shape,
+            device=args.device,
+            lr=args.lr,
+            feature_dim=args.feature_dim,
+            hidden_dim=args.hidden_dim,
+            levels=args.levels,
+            bins=args.bins,
+            atoms=args.atoms,
+            v_min=args.v_min,
+            v_max=args.v_max,
+            bc_lambda=args.bc_lambda,
+            bc_margin=args.bc_margin,
+            gru_layers=1,
+            rgb_encoder_layers=0,
+            use_parallel_impl=False,
+            critic_lambda=args.critic_lambda,
+            critic_target_tau=args.critic_target_tau,
+            critic_target_interval=1,
+            weight_decay=args.weight_decay,
+            num_expl_steps=0,
+            update_every_steps=1,
+            stddev_schedule="0.0",  # no exploration noise for eval
+        )
+        saved_agent = payload["agent"]
+        agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
+        agent.critic.load_state_dict(saved_agent.critic.state_dict())
+        agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
+    else:
+        agent = SQARAgent(
+            rgb_obs_shape=rgb_spec.shape,
+            low_dim_obs_shape=low_dim_spec.shape,
+            action_shape=action_spec.shape,
+            device=args.device,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            feature_dim=args.feature_dim,
+            hidden_dim=args.hidden_dim,
+            levels=args.levels,
+            bins=args.bins,
+            soft_alpha=args.soft_alpha,
+            critic_target_tau=args.critic_target_tau,
+        )
+        saved_agent = payload["agent"]
+        agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
+        agent.qf1.load_state_dict(saved_agent.qf1.state_dict())
+        agent.qf2.load_state_dict(saved_agent.qf2.state_dict())
+        agent.qf1_target.load_state_dict(saved_agent.qf1_target.state_dict())
+        agent.qf2_target.load_state_dict(saved_agent.qf2_target.state_dict())
 
-    # Load weights
-    payload = torch.load(args.snapshot, map_location=args.device)
-    saved_agent = payload["agent"]
-    agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
-    agent.critic.load_state_dict(saved_agent.critic.state_dict())
-    agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
     agent.train(False)
-    print(f"[Eval] Loaded agent from {args.snapshot}")
+    print(f"[Eval] Loaded {args.agent.upper()} agent from {args.snapshot}")
     print(f"       Trained for {payload.get('_global_step', '?')} steps")
 
     return agent
@@ -239,7 +296,7 @@ def main():
     # Setup
     # ------------------------------------------------------------------
     print("=" * 60)
-    print("CQN-AS Real Robot Evaluation")
+    print(f"{args.agent.upper()} Real Robot Evaluation")
     print("=" * 60)
 
     camera_rig = build_camera_rig(args)
@@ -265,6 +322,8 @@ def main():
     )
 
     agent = make_agent_from_snapshot(env, args)
+    use_cqn = args.agent == "cqn"
+    use_te = use_cqn and args.temporal_ensemble
 
     # Video recording setup
     video_frames = []
@@ -286,7 +345,7 @@ def main():
         episode_reward = 0.0
         video_frames = []
 
-        if args.temporal_ensemble:
+        if use_te:
             te = utils.TemporalEnsembleControl(
                 args.episode_length, env.action_spec(), args.action_sequence,
             )
@@ -296,24 +355,33 @@ def main():
         while not time_step.last():
             t0 = time.time()
 
-            # Query policy
-            if args.temporal_ensemble or episode_step % args.action_sequence == 0:
+            if use_cqn:
+                # CQN-AS: action sequences + optional temporal ensemble
+                if use_te or episode_step % args.action_sequence == 0:
+                    with torch.no_grad(), utils.eval_mode(agent):
+                        raw_action = agent.act(
+                            time_step.rgb_obs,
+                            time_step.low_dim_obs,
+                            step=999999,
+                            eval_mode=True,
+                        )
+                    action = raw_action.reshape([args.action_sequence, -1])
+                    if use_te:
+                        te.register_action_sequence(action)
+
+                if use_te:
+                    sub_action = te.get_action()
+                else:
+                    sub_action = action[episode_step % args.action_sequence]
+            else:
+                # ARSQ: single-step action
                 with torch.no_grad(), utils.eval_mode(agent):
-                    raw_action = agent.act(
+                    sub_action = agent.act(
                         time_step.rgb_obs,
                         time_step.low_dim_obs,
                         step=999999,
                         eval_mode=True,
                     )
-                action = raw_action.reshape([args.action_sequence, -1])
-                if args.temporal_ensemble:
-                    te.register_action_sequence(action)
-
-            # Select sub-action
-            if args.temporal_ensemble:
-                sub_action = te.get_action()
-            else:
-                sub_action = action[episode_step % args.action_sequence]
 
             # Execute
             time_step = env.step(sub_action)
