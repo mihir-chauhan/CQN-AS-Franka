@@ -1,25 +1,37 @@
 """
-train_real.py — Train CQN-AS on a real Franka Panda.
+train_real.py — Train CQN-AS or ARSQ (SQAR) on a real Franka Panda.
 
 Workflow
 --------
 1. Connect to robot + cameras (wrist-only is fine for training).
 2. Record kinesthetic demonstrations (gravity-comp / freedrive mode).
 3. Compute action stats from demos.
-4. Train CQN-AS with the same agent architecture as RLBench training.
+4. Train the selected agent with the same architecture as RLBench training.
 5. Periodically save snapshots + action stats.
 
 Usage
 -----
+    # CQN-AS (default, same as before):
     python -m simtoreal.train_real \
+        --agent cqn \
         --robot-ip 192.168.131.41 \
         --wrist-serial <ORBBEC_SERIAL> \
         --num-demos 10 \
         --num-train-steps 50000 \
         --save-dir ./runs/real_train
 
+    # ARSQ (SQAR):
+    python -m simtoreal.train_real \
+        --agent arsq \
+        --robot-ip 192.168.131.41 \
+        --wrist-serial <ORBBEC_SERIAL> \
+        --load-demos-only --demo-dir ../runs/demos \
+        --num-train-steps 50000 \
+        --save-dir ./runs/real_train_arsq
+
     # Resume from checkpoint:
     python -m simtoreal.train_real \
+        --agent cqn \
         --robot-ip 192.168.131.41 \
         --wrist-serial <SERIAL> \
         --resume ./runs/real_train/snapshot.pt \
@@ -55,11 +67,17 @@ import psutil  # for memory diagnostics
 
 import utils
 from logger import Logger
+
+# CQN-AS agent + disk-backed replay
 from rlbench_src.cqn_as import CQNASAgent
 from rlbench_src.replay_buffer_action_sequence import (
     ReplayBufferStorage,
     make_replay_loader,
 )
+
+# ARSQ (SQAR) agent + in-memory replay
+from arsq_src.sqar import SQARAgent
+from arsq_src.replay_buffer import ReplayBufferBatch
 
 from simtoreal.cameras import (
     CAMERA_H,
@@ -91,7 +109,12 @@ def _log_mem(label: str = ""):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train CQN-AS on real Franka Panda")
+    p = argparse.ArgumentParser(description="Train CQN-AS or ARSQ on real Franka Panda")
+
+    # Agent selection
+    p.add_argument("--agent", choices=["cqn", "arsq"], default="cqn",
+                   help="'cqn' = CQN-AS (action sequences + distributional RL), "
+                        "'arsq' = SQAR (single-step soft Q auto-regressive)")
 
     # Robot
     p.add_argument("--robot-ip", type=str, default="192.168.131.41")
@@ -147,13 +170,16 @@ def parse_args():
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--device", type=str, default="cuda")
 
-    # Agent hyperparams (match config_cqn_as_rlbench.yaml defaults)
+    # Agent hyperparams — shared between CQN-AS and ARSQ
     p.add_argument("--lr", type=float, default=5e-5)
     p.add_argument("--weight-decay", type=float, default=0.1)
     p.add_argument("--feature-dim", type=int, default=64)
     p.add_argument("--hidden-dim", type=int, default=512)
     p.add_argument("--levels", type=int, default=3)
     p.add_argument("--bins", type=int, default=5)
+    p.add_argument("--critic-target-tau", type=float, default=0.02)
+
+    # CQN-AS specific
     p.add_argument("--atoms", type=int, default=51)
     p.add_argument("--v-min", type=float, default=-2.0)
     p.add_argument("--v-max", type=float, default=2.0)
@@ -161,7 +187,14 @@ def parse_args():
     p.add_argument("--bc-margin", type=float, default=0.01)
     p.add_argument("--critic-lambda", type=float, default=0.1)
     p.add_argument("--stddev-schedule", type=str, default="0.01")
-    p.add_argument("--critic-target-tau", type=float, default=0.02)
+
+    # ARSQ (SQAR) specific
+    p.add_argument("--soft-alpha", type=float, default=0.001)
+    p.add_argument("--bellman-loss-coef", type=float, default=0.1)
+    p.add_argument("--cql-type", type=str, default="margin",
+                   choices=["cql", "margin"])
+    p.add_argument("--cql-min-q-weight", type=float, default=1.0)
+    p.add_argument("--cql-clip-diff-min", type=float, default=-0.01)
 
     # Save / resume
     p.add_argument("--save-dir", type=str, default="./runs/real_train")
@@ -310,7 +343,8 @@ def load_demos(demo_dir: str, env: RealFrankaEnv) -> list[list]:
 # ============================================================================
 
 
-def make_agent(env: ExtendedTimeStepWrapper, args) -> CQNASAgent:
+def make_cqn_agent(env: ExtendedTimeStepWrapper, args) -> CQNASAgent:
+    """Build CQN-AS agent (action sequences + distributional RL)."""
     rgb_spec = env.rgb_observation_spec()
     low_dim_spec = env.low_dim_observation_spec()
     action_spec = env.action_spec()
@@ -346,6 +380,43 @@ def make_agent(env: ExtendedTimeStepWrapper, args) -> CQNASAgent:
     return agent
 
 
+def make_arsq_agent(env: ExtendedTimeStepWrapper, args) -> SQARAgent:
+    """Build ARSQ (SQAR) agent (single-step soft Q auto-regressive)."""
+    rgb_spec = env.rgb_observation_spec()
+    low_dim_spec = env.low_dim_observation_spec()
+    action_spec = env.action_spec()
+
+    agent = SQARAgent(
+        rgb_obs_shape=rgb_spec.shape,
+        low_dim_obs_shape=low_dim_spec.shape,
+        action_shape=action_spec.shape,
+        device=args.device,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        feature_dim=args.feature_dim,
+        hidden_dim=args.hidden_dim,
+        levels=args.levels,
+        bins=args.bins,
+        soft_alpha=args.soft_alpha,
+        bellman_loss_coef=args.bellman_loss_coef,
+        cql_type=args.cql_type,
+        cql_min_q_weight=args.cql_min_q_weight,
+        cql_clip_diff_min=args.cql_clip_diff_min,
+        critic_target_tau=args.critic_target_tau,
+        update_every_steps=1,
+        num_expl_steps=0,
+    )
+    return agent
+
+
+def make_agent(env: ExtendedTimeStepWrapper, args):
+    """Dispatch to the correct agent builder."""
+    if args.agent == "arsq":
+        return make_arsq_agent(env, args)
+    else:
+        return make_cqn_agent(env, args)
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -355,6 +426,14 @@ def main():
     args = parse_args()
     utils.set_seed_everywhere(args.seed)
 
+    use_cqn = args.agent == "cqn"
+    use_arsq = args.agent == "arsq"
+
+    # ARSQ doesn't use action sequences or temporal ensemble
+    if use_arsq:
+        args.action_sequence = 1
+        args.temporal_ensemble = False
+
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -362,6 +441,7 @@ def main():
     # 1. Setup cameras + environment
     # ------------------------------------------------------------------
     print("=" * 60)
+    print(f"Agent: {args.agent.upper()}")
     print("Setting up cameras...")
     camera_rig = build_camera_rig(args)
 
@@ -406,7 +486,7 @@ def main():
     _log_mem("after loading/rescaling demos")
 
     # ------------------------------------------------------------------
-    # 3. Flush demos into replay buffers and FREE memory before agent
+    # 3. Setup replay buffers + insert demos
     # ------------------------------------------------------------------
     print("=" * 60)
     print("Setting up replay buffers and inserting demos...")
@@ -418,31 +498,60 @@ def main():
         specs.Array((1,), np.float32, "discount"),
         specs.Array((1,), np.float32, "demo"),
     )
-    replay_storage = ReplayBufferStorage(
-        data_specs, save_dir / "buffer", use_relabeling=True,
-    )
-    demo_replay_storage = ReplayBufferStorage(
-        data_specs, save_dir / "demo_buffer", use_relabeling=True,
-    )
 
-    # Insert demos into replay buffers
-    for demo in demos:
-        for ts in demo:
-            replay_storage.add(ts)
-            demo_replay_storage.add(ts)
-    print(f"Loaded {len(replay_storage)} demo transitions into buffers")
+    if use_cqn:
+        # CQN-AS: disk-backed replay via ReplayBufferStorage
+        replay_storage = ReplayBufferStorage(
+            data_specs, save_dir / "buffer", use_relabeling=True,
+        )
+        demo_replay_storage = ReplayBufferStorage(
+            data_specs, save_dir / "demo_buffer", use_relabeling=True,
+        )
+        for demo in demos:
+            for ts in demo:
+                replay_storage.add(ts)
+                demo_replay_storage.add(ts)
+        print(f"Loaded {len(replay_storage)} demo transitions into buffers")
+    else:
+        # ARSQ: in-memory ReplayBufferBatch
+        replay_buffer = ReplayBufferBatch(
+            data_specs,
+            use_relabeling=True,
+            is_demo_buffer=False,
+            max_size=args.replay_buffer_size,
+            nstep=1,
+            discount=0.99,
+            do_always_bootstrap=False,
+            frame_stack=args.frame_stack,
+        )
+        demo_replay_buffer = ReplayBufferBatch(
+            data_specs,
+            use_relabeling=True,
+            is_demo_buffer=True,
+            max_size=args.replay_buffer_size,
+            nstep=1,
+            discount=0.99,
+            do_always_bootstrap=False,
+            frame_stack=args.frame_stack,
+        )
+        for demo in demos:
+            for ts in demo:
+                replay_buffer.add(ts)
+                demo_replay_buffer.add(ts)
+        print(f"Loaded {len(replay_buffer)} transitions into replay, "
+              f"{len(demo_replay_buffer)} into demo replay")
 
-    # Free demo data from memory — it's now persisted in the replay buffers
-    del demos, demo, ts
+    # Free demo data from memory
+    del demos
     import gc; gc.collect()
     print("Demo data freed from memory.")
     _log_mem("after freeing demos")
 
     # ------------------------------------------------------------------
-    # 4. Build agent (now that demo memory is released)
+    # 4. Build agent
     # ------------------------------------------------------------------
     print("=" * 60)
-    print("Building CQN-AS agent...")
+    print(f"Building {args.agent.upper()} agent...")
     agent = make_agent(env, args)
     _log_mem("after building agent")
 
@@ -454,50 +563,90 @@ def main():
         payload = torch.load(args.resume, map_location=args.device)
         saved_agent = payload["agent"]
         agent.encoder.load_state_dict(saved_agent.encoder.state_dict())
-        agent.critic.load_state_dict(saved_agent.critic.state_dict())
-        agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
+        if use_cqn:
+            agent.critic.load_state_dict(saved_agent.critic.state_dict())
+            agent.critic_target.load_state_dict(saved_agent.critic_target.state_dict())
+        else:
+            agent.qf1.load_state_dict(saved_agent.qf1.state_dict())
+            agent.qf2.load_state_dict(saved_agent.qf2.state_dict())
+            agent.qf1_target.load_state_dict(saved_agent.qf1_target.state_dict())
+            agent.qf2_target.load_state_dict(saved_agent.qf2_target.state_dict())
         global_step = payload.get("_global_step", 0)
         global_episode = payload.get("_global_episode", 0)
         del payload, saved_agent
         gc.collect()
         print(f"  Resumed at step {global_step}, episode {global_episode}")
 
-    replay_loader = make_replay_loader(
-        save_dir / "buffer",
-        args.replay_buffer_size,
-        args.batch_size,
-        1,  # num_workers (keep low to avoid OOM from forked processes)
-        save_snapshot=False,
-        nstep=1,
-        discount=0.99,
-        action_sequence=args.action_sequence,
-        frame_stack=args.frame_stack,
-        fill_action="zero_action",
-    )
-    demo_replay_loader = make_replay_loader(
-        save_dir / "demo_buffer",
-        args.replay_buffer_size,
-        args.demo_batch_size,
-        1,  # num_workers (keep low to avoid OOM from forked processes)
-        save_snapshot=False,
-        nstep=1,
-        discount=0.99,
-        action_sequence=args.action_sequence,
-        frame_stack=args.frame_stack,
-        fill_action="zero_action",
-    )
-    replay_iter = None
+    # ------------------------------------------------------------------
+    # 4b. Build replay iterators
+    # ------------------------------------------------------------------
+    if use_cqn:
+        replay_loader = make_replay_loader(
+            save_dir / "buffer",
+            args.replay_buffer_size,
+            args.batch_size,
+            1,  # num_workers
+            save_snapshot=False,
+            nstep=1,
+            discount=0.99,
+            action_sequence=args.action_sequence,
+            frame_stack=args.frame_stack,
+            fill_action="zero_action",
+        )
+        demo_replay_loader = make_replay_loader(
+            save_dir / "demo_buffer",
+            args.replay_buffer_size,
+            args.demo_batch_size,
+            1,  # num_workers
+            save_snapshot=False,
+            nstep=1,
+            discount=0.99,
+            action_sequence=args.action_sequence,
+            frame_stack=args.frame_stack,
+            fill_action="zero_action",
+        )
+        _replay_iter = None
 
-    def get_replay_iter():
-        nonlocal replay_iter
-        if replay_iter is None:
-            replay_iter = utils.DemoMergedIterator(
-                iter(replay_loader), iter(demo_replay_loader)
-            )
-        return replay_iter
+        def get_replay_iter():
+            nonlocal _replay_iter
+            if _replay_iter is None:
+                _replay_iter = utils.DemoMergedIterator(
+                    iter(replay_loader), iter(demo_replay_loader)
+                )
+            return _replay_iter
+    else:
+        # ARSQ: direct sampling from in-memory buffers
+        class _ARSQMergedIterator:
+            """Merge replay + demo buffer samples into one batch (tuple)."""
+            def __init__(self, rb, drb, bs, demo_bs):
+                self._rb = rb
+                self._drb = drb
+                self._bs = bs
+                self._demo_bs = demo_bs
 
-    # Temporal ensemble
-    if args.temporal_ensemble:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                items1 = self._rb.sample(self._bs)
+                items2 = self._drb.sample(self._demo_bs)
+                return tuple(
+                    np.concatenate([a, b], 0) for a, b in zip(items1, items2)
+                )
+
+        _replay_iter = None
+
+        def get_replay_iter():
+            nonlocal _replay_iter
+            if _replay_iter is None:
+                _replay_iter = _ARSQMergedIterator(
+                    replay_buffer, demo_replay_buffer,
+                    args.batch_size, args.demo_batch_size,
+                )
+            return _replay_iter
+
+    # Temporal ensemble (CQN only)
+    if use_cqn and args.temporal_ensemble:
         temporal_ensemble = utils.TemporalEnsembleControl(
             args.episode_length,
             env.action_spec(),
@@ -508,17 +657,21 @@ def main():
     # 5. Training loop
     # ------------------------------------------------------------------
     print("=" * 60)
-    print(f"Starting training for {args.num_train_steps} steps...")
+    print(f"Starting {args.agent.upper()} training for {args.num_train_steps} steps...")
 
     dt = 1.0 / args.control_hz
     episode_step = 0
     episode_reward = 0.0
 
     time_step = env.reset()
-    if args.temporal_ensemble:
+    if use_cqn and args.temporal_ensemble:
         temporal_ensemble.reset()
-    replay_storage.add(time_step)
-    demo_replay_storage.add(time_step)
+    if use_cqn:
+        replay_storage.add(time_step)
+        demo_replay_storage.add(time_step)
+    else:
+        replay_buffer.add(time_step)
+        demo_replay_buffer.add(time_step)
 
     timer = utils.Timer()
 
@@ -540,27 +693,44 @@ def main():
             if global_step >= args.eval_every and global_step % args.eval_every < episode_step:
                 print("  [Eval] Running evaluation episodes...")
                 eval_reward = run_eval(
-                    env, agent, args.num_eval_episodes,
-                    args.action_sequence, args.temporal_ensemble,
-                    args.episode_length,
+                    env, agent, args,
                 )
                 print(f"  [Eval] Mean reward: {eval_reward:.3f}")
 
             # Save
             if global_step % args.save_every < episode_step:
-                save_snapshot(save_dir, agent, global_step, global_episode)
+                save_snapshot(save_dir, agent, global_step, global_episode,
+                              agent_type=args.agent)
 
             time_step = env.reset()
-            if args.temporal_ensemble:
+            if use_cqn and args.temporal_ensemble:
                 temporal_ensemble.reset()
-            replay_storage.add(time_step)
-            demo_replay_storage.add(time_step)
+            if use_cqn:
+                replay_storage.add(time_step)
+                demo_replay_storage.add(time_step)
+            else:
+                replay_buffer.add(time_step)
+                demo_replay_buffer.add(time_step)
             episode_step = 0
             episode_reward = 0.0
 
         # Sample action
         t0 = time.time()
-        if args.temporal_ensemble or episode_step % args.action_sequence == 0:
+        if use_cqn:
+            # CQN-AS: action sequences + temporal ensemble
+            if args.temporal_ensemble or episode_step % args.action_sequence == 0:
+                with torch.no_grad(), utils.eval_mode(agent):
+                    action = agent.act(
+                        time_step.rgb_obs,
+                        time_step.low_dim_obs,
+                        global_step,
+                        eval_mode=False,
+                    )
+                action = action.reshape([args.action_sequence, -1])
+                if args.temporal_ensemble:
+                    temporal_ensemble.register_action_sequence(action)
+        else:
+            # ARSQ: single-step action every step
             with torch.no_grad(), utils.eval_mode(agent):
                 action = agent.act(
                     time_step.rgb_obs,
@@ -568,29 +738,36 @@ def main():
                     global_step,
                     eval_mode=False,
                 )
-            action = action.reshape([args.action_sequence, -1])
-            if args.temporal_ensemble:
-                temporal_ensemble.register_action_sequence(action)
 
         # Update agent
-        if global_step > 0 and global_step % 1 == 0:
+        if global_step > 0:
             for _ in range(args.num_update_steps):
                 batch = next(get_replay_iter())
-                batch = utils.to_torch_pixel_tensor_dict(batch, args.device)
-                metrics = agent.update(batch)
-                agent.update_target_critic(global_step)
+                if use_cqn:
+                    batch = utils.to_torch_pixel_tensor_dict(batch, args.device)
+                    metrics = agent.update(batch)
+                    agent.update_target_critic(global_step)
+                else:
+                    metrics = agent.update(batch, global_step)
 
         # Execute action
-        if args.temporal_ensemble:
-            sub_action = temporal_ensemble.get_action()
+        if use_cqn:
+            if args.temporal_ensemble:
+                sub_action = temporal_ensemble.get_action()
+            else:
+                sub_action = action[episode_step % args.action_sequence]
+            sub_action = agent.add_noise_to_action(sub_action, global_step)
         else:
-            sub_action = action[episode_step % args.action_sequence]
-        sub_action = agent.add_noise_to_action(sub_action, global_step)
+            sub_action = action  # ARSQ: already a single action
 
         time_step = env.step(sub_action)
         episode_reward += time_step.reward
-        replay_storage.add(time_step)
-        demo_replay_storage.add(time_step)
+        if use_cqn:
+            replay_storage.add(time_step)
+            demo_replay_storage.add(time_step)
+        else:
+            replay_buffer.add(time_step)
+            demo_replay_buffer.add(time_step)
         episode_step += 1
         global_step += 1
 
@@ -600,7 +777,8 @@ def main():
             time.sleep(dt - elapsed)
 
     # Final save
-    save_snapshot(save_dir, agent, global_step, global_episode)
+    save_snapshot(save_dir, agent, global_step, global_episode,
+                  agent_type=args.agent)
     print(f"\nTraining complete. {global_step} steps, {global_episode} episodes.")
     env.close()
 
@@ -610,42 +788,46 @@ def main():
 # ============================================================================
 
 
-def run_eval(
-    env: ExtendedTimeStepWrapper,
-    agent: CQNASAgent,
-    num_episodes: int,
-    action_sequence: int,
-    temporal_ensemble: bool,
-    episode_length: int,
-) -> float:
+def run_eval(env: ExtendedTimeStepWrapper, agent, args) -> float:
+    """Run evaluation episodes — works for both CQN-AS and ARSQ."""
+    use_cqn = args.agent == "cqn"
+    action_sequence = args.action_sequence
+    use_te = use_cqn and args.temporal_ensemble
+
     total_reward = 0.0
-    for ep in range(num_episodes):
+    for ep in range(args.num_eval_episodes):
         episode_step = 0
         time_step = env.reset()
-        if temporal_ensemble:
+        if use_te:
             te = utils.TemporalEnsembleControl(
-                episode_length, env.action_spec(), action_sequence,
+                args.episode_length, env.action_spec(), action_sequence,
             )
         while not time_step.last():
-            if temporal_ensemble or episode_step % action_sequence == 0:
-                with torch.no_grad(), utils.eval_mode(agent):
-                    action = agent.act(
-                        time_step.rgb_obs,
-                        time_step.low_dim_obs,
-                        step=999999,
-                        eval_mode=True,
-                    )
-                action = action.reshape([action_sequence, -1])
-                if temporal_ensemble:
-                    te.register_action_sequence(action)
-            if temporal_ensemble:
-                sub_action = te.get_action()
+            if use_cqn:
+                if use_te or episode_step % action_sequence == 0:
+                    with torch.no_grad(), utils.eval_mode(agent):
+                        action = agent.act(
+                            time_step.rgb_obs, time_step.low_dim_obs,
+                            step=999999, eval_mode=True,
+                        )
+                    action = action.reshape([action_sequence, -1])
+                    if use_te:
+                        te.register_action_sequence(action)
+                if use_te:
+                    sub_action = te.get_action()
+                else:
+                    sub_action = action[episode_step % action_sequence]
             else:
-                sub_action = action[episode_step % action_sequence]
+                with torch.no_grad(), utils.eval_mode(agent):
+                    sub_action = agent.act(
+                        time_step.rgb_obs, time_step.low_dim_obs,
+                        step=999999, eval_mode=True,
+                    )
+
             time_step = env.step(sub_action)
             total_reward += time_step.reward
             episode_step += 1
-    return total_reward / max(num_episodes, 1)
+    return total_reward / max(args.num_eval_episodes, 1)
 
 
 # ============================================================================
@@ -653,10 +835,12 @@ def run_eval(
 # ============================================================================
 
 
-def save_snapshot(save_dir: Path, agent, global_step, global_episode):
+def save_snapshot(save_dir: Path, agent, global_step, global_episode,
+                  agent_type="cqn"):
     path = save_dir / "snapshot.pt"
     payload = {
         "agent": agent,
+        "agent_type": agent_type,
         "timer": None,
         "_global_step": global_step,
         "_global_episode": global_episode,
