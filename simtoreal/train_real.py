@@ -112,7 +112,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Train CQN-AS or ARSQ on real Franka Panda")
 
     # Agent selection
-    p.add_argument("--agent", choices=["cqn", "arsq"], default="cqn",
+    p.add_argument("--agent", choices=["cqn", "arsq"], default="arsq",
                    help="'cqn' = CQN-AS (action sequences + distributional RL), "
                         "'arsq' = SQAR (single-step soft Q auto-regressive)")
 

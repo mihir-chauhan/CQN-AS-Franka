@@ -75,7 +75,7 @@ def parse_args():
     )
 
     # Agent selection
-    p.add_argument("--agent", choices=["cqn", "arsq"], default="cqn",
+    p.add_argument("--agent", choices=["cqn", "arsq"], default="arsq",
                    help="'cqn' = CQN-AS (action sequences), "
                         "'arsq' = SQAR (single-step). "
                         "Auto-detected from snapshot if saved with agent_type.")
