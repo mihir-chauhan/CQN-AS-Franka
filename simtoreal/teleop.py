@@ -142,10 +142,33 @@ def main():
     robot.set_collision_behavior(50, 50)
     robot.recover_from_errors()
 
-    # Home
+    # Home (safe two-waypoint trajectory to avoid velocity discontinuities)
     print("Homing robot...")
-    motion = JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL)
-    robot.move(motion)
+    try:
+        # Use a smooth trajectory from current joints -> HOME_Q
+        robot.relative_dynamics_factor = HOME_VEL
+        start_q = list(robot.current_joint_state.position)
+        motion = JointWaypointMotion(
+            [JointWaypoint(start_q), JointWaypoint(HOME_Q)], HOME_VEL
+        )
+        robot.move(motion)
+    except Exception as ex:
+        # If homing fails, attempt recovery and retry once more gently
+        print(f"  Homing failed (retrying safely): {ex}")
+        robot.recover_from_errors()
+        time.sleep(0.5)
+        try:
+            robot.relative_dynamics_factor = HOME_VEL
+            start_q = list(robot.current_joint_state.position)
+            motion = JointWaypointMotion(
+                [JointWaypoint(start_q), JointWaypoint(HOME_Q)], HOME_VEL
+            )
+            robot.move(motion)
+        except Exception as ex2:
+            print(f"  Homing retry failed: {ex2}")
+    finally:
+        # restore teleop dynamics
+        robot.relative_dynamics_factor = TELEOP_VEL
     gripper.open(GRIPPER_SPEED)
     gripper_open = True
     time.sleep(0.5)
@@ -210,12 +233,31 @@ def main():
                     robot.recover_from_errors()
                     time.sleep(0.5)
                     try:
-                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL))
+                        # Smooth homing: current -> home
+                        robot.relative_dynamics_factor = HOME_VEL
+                        start_q = list(robot.current_joint_state.position)
+                        robot.move(
+                            JointWaypointMotion(
+                                [JointWaypoint(start_q), JointWaypoint(HOME_Q)], HOME_VEL
+                            )
+                        )
                     except Exception as ex:
                         print(f"  Homing failed: {ex}")
                         robot.recover_from_errors()
                         time.sleep(1.0)
-                        robot.move(JointWaypointMotion([JointWaypoint(HOME_Q)], HOME_VEL))
+                        # Last-resort retry
+                        try:
+                            robot.relative_dynamics_factor = HOME_VEL
+                            start_q = list(robot.current_joint_state.position)
+                            robot.move(
+                                JointWaypointMotion(
+                                    [JointWaypoint(start_q), JointWaypoint(HOME_Q)], HOME_VEL
+                                )
+                            )
+                        except Exception as ex2:
+                            print(f"  Homing final retry failed: {ex2}")
+                    finally:
+                        robot.relative_dynamics_factor = TELEOP_VEL
                     print("  Home reached.")
                     continue
 
