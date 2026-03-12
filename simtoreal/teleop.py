@@ -4,27 +4,25 @@ teleop.py — Continuous keyboard teleoperation of the Franka Panda.
 Hold keys to move continuously. The robot moves at a fixed control rate
 (default 10 Hz) with small Cartesian increments while a key is held.
 
-Controls (robot perspective, facing the table):
-────────────────────────────────────────────────
-  Movement (hold to move continuously):
-    W / S     — forward / backward   (+X / -X)
-    A / D     — left / right         (-Y / +Y)
-    R / F     — up / down            (+Z / -Z)
+Two modes:
+  T  — toggle between TRANSLATE mode (default) and ORIENT mode.
 
-  Wrist rotation (hold):
-    Q / E     — rotate wrist CCW / CW
+TRANSLATE mode (move the end-effector position):
+  W / S     — forward / backward   (+X / -X)
+  A / D     — left / right         (-Y / +Y)
+  R / F     — up / down            (+Z / -Z)
 
-  Gripper:
-    SPACE     — toggle gripper open / close
+ORIENT mode (rotate the end-effector in place):
+  W / S     — pitch down / up     (rotation about EE Y-axis)
+  A / D     — yaw left / right    (rotation about EE Z-axis)
+  Q / E     — roll CCW / CW       (rotation about EE X-axis)
 
-  Speed:
-    1         — slow   (2 mm/step  → ~2 cm/s at 10 Hz)
-    2         — medium (5 mm/step  → ~5 cm/s at 10 Hz) [default]
-    3         — fast   (10 mm/step → ~10 cm/s at 10 Hz)
-
-  Other:
-    H         — home the robot
-    ESC / X   — quit
+Always available:
+  SPACE     — toggle gripper open / close
+  1 / 2 / 3 — speed preset (slow / medium / fast)
+  H         — home the robot
+  ESC / X   — quit
+  T         — toggle TRANSLATE ↔ ORIENT mode
 
 Usage:
     python -m simtoreal.teleop
@@ -44,6 +42,7 @@ import tty
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 from franky import (
     Affine,
     CartesianMotion,
@@ -71,7 +70,13 @@ SPEED_PRESETS = {
     "3": 0.050,   # 50 mm/tick  → ~50 cm/s
 }
 
-ROTATION_STEP = 0.08  # radians/tick (~4.6°/tick → ~46°/s at 10 Hz)
+# Orientation step per control tick (radians).
+# At 10 Hz, rotation speed ≈ step × 10.
+ORIENT_PRESETS = {
+    "1": 0.03,    #  ~1.7°/tick → ~17°/s
+    "2": 0.06,    #  ~3.4°/tick → ~34°/s  (default)
+    "3": 0.10,    #  ~5.7°/tick → ~57°/s
+}
 
 GRIPPER_SPEED = 0.1   # m/s
 GRIPPER_FORCE = 20.0  # N
@@ -115,6 +120,13 @@ class RawKeyboard:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
+def _euler_to_quat(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    """Small-angle RPY (EE-local frame) → quaternion [x, y, z, w]."""
+    return R.from_euler("xyz", [roll, pitch, yaw]).as_quat()  # scipy: xyzw
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="Continuous keyboard teleop for Franka")
     parser.add_argument("--robot-ip", type=str, default="192.168.131.41")
@@ -138,31 +150,48 @@ def main():
     gripper_open = True
     time.sleep(0.5)
 
-    step_m = 0.015  # default 15 mm/tick
+    step_m = SPEED_PRESETS["2"]   # default translation step
+    rot_rad = ORIENT_PRESETS["2"]  # default orientation step
     dt = 1.0 / args.hz
+    translate_mode = True  # True = TRANSLATE, False = ORIENT
 
-    print()
-    print("=" * 60)
-    print("  FRANKA CONTINUOUS TELEOP")
-    print("=" * 60)
-    print()
-    print("  HOLD keys to move continuously:")
-    print()
-    print("  W/S  = forward/back    A/D  = left/right")
-    print("  R/F  = up/down         Q/E  = rotate wrist")
-    print("  SPACE = toggle gripper")
-    print("  1/2/3 = speed (10mm / 25mm / 50mm per tick)")
-    print(f"  Control rate: {args.hz:.0f} Hz")
-    print("  H = home               ESC or X = quit")
-    print()
-    print(f"  Speed: {step_m * 1000:.0f} mm/tick ({step_m * args.hz * 100:.0f} cm/s)")
-    print(f"  Gripper: OPEN")
-    print()
-    print("  Ready! Hold a movement key...")
-    print()
+    def _print_banner():
+        mode_str = "🔹 TRANSLATE" if translate_mode else "🔸 ORIENT"
+        print()
+        print("=" * 60)
+        print("  FRANKA CONTINUOUS TELEOP")
+        print("=" * 60)
+        print()
+        print(f"  Current mode: {mode_str}")
+        print()
+        if translate_mode:
+            print("  W/S  = forward / back     (+X / -X)")
+            print("  A/D  = left / right        (-Y / +Y)")
+            print("  R/F  = up / down           (+Z / -Z)")
+        else:
+            print("  W/S  = pitch down / up     (about local Y)")
+            print("  A/D  = yaw left / right    (about local Z)")
+            print("  Q/E  = roll CCW / CW       (about local X)")
+        print()
+        print("  T     = toggle TRANSLATE ↔ ORIENT mode")
+        print("  SPACE = toggle gripper")
+        print("  1/2/3 = speed preset")
+        print("  H     = home          ESC or X = quit")
+        print(f"  Rate : {args.hz:.0f} Hz")
+        print(f"  Trans: {step_m * 1000:.0f} mm/tick "
+              f"({step_m * args.hz * 100:.0f} cm/s)")
+        print(f"  Rot  : {rot_rad * 180 / np.pi:.1f}°/tick "
+              f"({rot_rad * args.hz * 180 / np.pi:.0f}°/s)")
+        print(f"  Gripper: {'OPEN' if gripper_open else 'CLOSED'}")
+        print()
+        print("  Ready! Hold movement keys...")
+        print()
+
+    _print_banner()
 
     last_print_time = 0.0
     gripper_toggled = False  # debounce
+    mode_toggled = False     # debounce for T
 
     with RawKeyboard() as kb:
         try:
@@ -190,12 +219,23 @@ def main():
                     print("  Home reached.")
                     continue
 
-                # ── Speed presets ──
-                for k, v in SPEED_PRESETS.items():
+                # ── Mode toggle (with debounce) ──
+                if "t" in keys:
+                    if not mode_toggled:
+                        mode_toggled = True
+                        translate_mode = not translate_mode
+                        _print_banner()
+                else:
+                    mode_toggled = False
+
+                # ── Speed presets (affect both translation & rotation) ──
+                for k in ("1", "2", "3"):
                     if k in keys:
-                        step_m = v
-                        print(f"  Speed: {step_m * 1000:.0f} mm/tick "
-                              f"({step_m * args.hz * 100:.0f} cm/s)")
+                        step_m = SPEED_PRESETS[k]
+                        rot_rad = ORIENT_PRESETS[k]
+                        print(f"  Speed preset {k}: "
+                              f"trans={step_m * 1000:.0f} mm/tick  "
+                              f"rot={rot_rad * 180 / np.pi:.1f}°/tick")
 
                 # ── Gripper toggle (with debounce) ──
                 if " " in keys:
@@ -216,58 +256,82 @@ def main():
                     gripper_toggled = False
 
                 # ── Accumulate movement from held keys ──
-                dx, dy, dz, dq7 = 0.0, 0.0, 0.0, 0.0
+                if translate_mode:
+                    # ── TRANSLATE mode: W/S/A/D/R/F move position ──
+                    dx, dy, dz = 0.0, 0.0, 0.0
+                    if "w" in keys:
+                        dx += step_m
+                    if "s" in keys:
+                        dx -= step_m
+                    if "a" in keys:
+                        dy -= step_m
+                    if "d" in keys:
+                        dy += step_m
+                    if "r" in keys:
+                        dz += step_m
+                    if "f" in keys:
+                        dz -= step_m
 
-                if "w" in keys:
-                    dx += step_m
-                if "s" in keys:
-                    dx -= step_m
-                if "a" in keys:
-                    dy -= step_m
-                if "d" in keys:
-                    dy += step_m
-                if "r" in keys:
-                    dz += step_m
-                if "f" in keys:
-                    dz -= step_m
-                if "q" in keys:
-                    dq7 -= ROTATION_STEP
-                if "e" in keys:
-                    dq7 += ROTATION_STEP
+                    if dx != 0.0 or dy != 0.0 or dz != 0.0:
+                        try:
+                            cart_motion = CartesianMotion(
+                                Affine([dx, dy, dz]),
+                                ReferenceType.Relative,
+                                TELEOP_VEL,
+                            )
+                            robot.move(cart_motion)
 
-                # ── Execute Cartesian motion ──
-                if dx != 0.0 or dy != 0.0 or dz != 0.0:
-                    try:
-                        cart_motion = CartesianMotion(
-                            Affine([dx, dy, dz]),
-                            ReferenceType.Relative,
-                            TELEOP_VEL,
-                        )
-                        robot.move(cart_motion)
+                            now = time.time()
+                            if now - last_print_time > 0.5:
+                                ee = robot.current_cartesian_state.pose.end_effector_pose
+                                pos = ee.translation
+                                quat = ee.quaternion  # xyzw
+                                rpy = R.from_quat(quat).as_euler("xyz", degrees=True)
+                                print(f"  pos: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f}"
+                                      f"  rpy: R={rpy[0]:.1f} P={rpy[1]:.1f} Y={rpy[2]:.1f}")
+                                last_print_time = now
+                        except Exception:
+                            robot.recover_from_errors()
+                            time.sleep(0.1)
 
-                        # Print position at ~2 Hz to avoid spam
-                        now = time.time()
-                        if now - last_print_time > 0.5:
-                            pos = robot.current_cartesian_state.pose.end_effector_pose.translation
-                            print(f"  pos: x={pos[0]:.3f}  y={pos[1]:.3f}  z={pos[2]:.3f}")
-                            last_print_time = now
-                    except Exception as ex:
-                        robot.recover_from_errors()
-                        time.sleep(0.1)
+                else:
+                    # ── ORIENT mode: W/S=pitch, A/D=yaw, Q/E=roll ──
+                    droll, dpitch, dyaw = 0.0, 0.0, 0.0
+                    if "w" in keys:
+                        dpitch += rot_rad   # pitch down (nose down)
+                    if "s" in keys:
+                        dpitch -= rot_rad   # pitch up
+                    if "a" in keys:
+                        dyaw += rot_rad     # yaw left
+                    if "d" in keys:
+                        dyaw -= rot_rad     # yaw right
+                    if "q" in keys:
+                        droll -= rot_rad    # roll CCW
+                    if "e" in keys:
+                        droll += rot_rad    # roll CW
 
-                # ── Execute wrist rotation ──
-                if dq7 != 0.0:
-                    try:
-                        current_q = list(robot.current_joint_state.position)
-                        target_q = current_q.copy()
-                        target_q[6] += dq7
-                        motion = JointWaypointMotion(
-                            [JointWaypoint(target_q)], TELEOP_VEL
-                        )
-                        robot.move(motion)
-                    except Exception as ex:
-                        robot.recover_from_errors()
-                        time.sleep(0.1)
+                    if droll != 0.0 or dpitch != 0.0 or dyaw != 0.0:
+                        try:
+                            quat = _euler_to_quat(droll, dpitch, dyaw)
+                            cart_motion = CartesianMotion(
+                                Affine([0.0, 0.0, 0.0], quat),
+                                ReferenceType.Relative,
+                                TELEOP_VEL,
+                            )
+                            robot.move(cart_motion)
+
+                            now = time.time()
+                            if now - last_print_time > 0.5:
+                                ee = robot.current_cartesian_state.pose.end_effector_pose
+                                pos = ee.translation
+                                eq = ee.quaternion
+                                rpy = R.from_quat(eq).as_euler("xyz", degrees=True)
+                                print(f"  pos: x={pos[0]:.3f} y={pos[1]:.3f} z={pos[2]:.3f}"
+                                      f"  rpy: R={rpy[0]:.1f} P={rpy[1]:.1f} Y={rpy[2]:.1f}")
+                                last_print_time = now
+                        except Exception:
+                            robot.recover_from_errors()
+                            time.sleep(0.1)
 
                 # ── Control rate ──
                 elapsed = time.time() - t0
