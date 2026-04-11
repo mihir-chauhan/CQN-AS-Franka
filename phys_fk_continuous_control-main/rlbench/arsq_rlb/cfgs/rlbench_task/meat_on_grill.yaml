@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: meat_on_grill
+task_name_short: meat_on
+episode_length: 150

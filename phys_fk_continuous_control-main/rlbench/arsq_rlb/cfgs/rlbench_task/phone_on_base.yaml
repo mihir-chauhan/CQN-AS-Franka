@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: phone_on_base
+task_name_short: phone_on_base
+episode_length: 175

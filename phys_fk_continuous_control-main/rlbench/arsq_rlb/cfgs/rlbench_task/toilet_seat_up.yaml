@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: toilet_seat_up
+task_name_short: toilet_seat
+episode_length: 150

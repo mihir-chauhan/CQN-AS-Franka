@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: put_rubbish_in_bin
+task_name_short: put_rubbish
+episode_length: 150

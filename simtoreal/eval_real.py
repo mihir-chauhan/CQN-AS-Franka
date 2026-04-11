@@ -144,6 +144,14 @@ def parse_args():
 
     # ARSQ specific
     p.add_argument("--soft-alpha", type=float, default=0.001)
+    # Physics-informed regularizers (no-ops at eval, needed for weight loading)
+    p.add_argument("--use-fk-reg", action="store_true", default=True)
+    p.add_argument("--no-fk-reg", dest="use_fk_reg", action="store_false")
+    p.add_argument("--use-eikonal", action="store_true", default=False)
+    p.add_argument("--nu", type=float, default=0.01)
+    p.add_argument("--kappa", type=float, default=0.1)
+    p.add_argument("--num-walks", type=int, default=10)
+    p.add_argument("--fk-weight", type=float, default=1.0)
 
     # Misc
     p.add_argument("--dry-run", action="store_true",
@@ -274,6 +282,12 @@ def make_agent_from_snapshot(env: ExtendedTimeStepWrapper, args):
             bins=args.bins,
             soft_alpha=args.soft_alpha,
             critic_target_tau=args.critic_target_tau,
+            use_fk_reg=args.use_fk_reg,
+            use_eikonal=args.use_eikonal,
+            nu=args.nu,
+            kappa=args.kappa,
+            num_walks=args.num_walks,
+            fk_weight=args.fk_weight,
         )
         saved_agent = payload["agent"]
         agent.encoder.load_state_dict(saved_agent.encoder.state_dict())

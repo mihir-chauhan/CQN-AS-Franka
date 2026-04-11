@@ -1,0 +1,18 @@
+env: walker2d-medium-expert-v2
+env_short: wme
+env_version: "v1"
+
+alg:
+  levels: 1
+  bins: 41
+
+  # sqar
+  soft_alpha: 0.01
+  act_alpha: ${alg.soft_alpha}
+  cql_min_q_weight: 10.0
+  cql_clip_diff_min: 0.0
+
+  # cqn
+  critic_lambda: 1.0
+  bc_lambda: 1.0
+  bc_fosd: 1.0

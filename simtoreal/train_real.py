@@ -195,6 +195,16 @@ def parse_args():
                    choices=["cql", "margin"])
     p.add_argument("--cql-min-q-weight", type=float, default=1.0)
     p.add_argument("--cql-clip-diff-min", type=float, default=-0.01)
+    # Physics-informed regularizers
+    p.add_argument("--use-fk-reg", action="store_true", default=True,
+                   help="Enable FK Walk-on-Spheres regularizer")
+    p.add_argument("--no-fk-reg", dest="use_fk_reg", action="store_false")
+    p.add_argument("--use-eikonal", action="store_true", default=False,
+                   help="Enable Eikonal gradient penalty")
+    p.add_argument("--nu", type=float, default=0.01)
+    p.add_argument("--kappa", type=float, default=0.1)
+    p.add_argument("--num-walks", type=int, default=10)
+    p.add_argument("--fk-weight", type=float, default=1.0)
 
     # Save / resume
     p.add_argument("--save-dir", type=str, default="./runs/real_train")
@@ -405,6 +415,12 @@ def make_arsq_agent(env: ExtendedTimeStepWrapper, args) -> SQARAgent:
         critic_target_tau=args.critic_target_tau,
         update_every_steps=1,
         num_expl_steps=0,
+        use_fk_reg=args.use_fk_reg,
+        use_eikonal=args.use_eikonal,
+        nu=args.nu,
+        kappa=args.kappa,
+        num_walks=args.num_walks,
+        fk_weight=args.fk_weight,
     )
     return agent
 

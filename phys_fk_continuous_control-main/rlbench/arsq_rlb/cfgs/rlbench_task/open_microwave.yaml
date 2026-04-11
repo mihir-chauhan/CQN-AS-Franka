@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: open_microwave
+task_name_short: open_microwave
+episode_length: 125

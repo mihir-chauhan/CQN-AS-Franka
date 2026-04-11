@@ -1,0 +1,17 @@
+env: hopper-medium-v2
+env_short: hm
+env_version: "v1"
+
+alg:
+  levels: 2
+  bins: 7
+
+  # sqar
+  soft_alpha: 0.01
+  act_alpha: ${alg.soft_alpha}
+  cql_min_q_weight: 0.5
+
+  # cqn
+  critic_lambda: 1.0
+  bc_lambda: 0.1
+  bc_fosd: 0.1

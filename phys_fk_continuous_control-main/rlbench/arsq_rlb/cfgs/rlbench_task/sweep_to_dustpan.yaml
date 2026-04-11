@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+task_name: sweep_to_dustpan
+task_name_short: sweep_to
+episode_length: 100

@@ -280,6 +280,13 @@ class SQARAgent:
         update_every_steps=1,
         num_expl_steps=0,
         use_logger=True,
+        # Physics-informed regularizers
+        use_fk_reg=True,
+        use_eikonal=False,
+        nu=0.01,
+        kappa=0.1,
+        num_walks=10,
+        fk_weight=1.0,
     ):
         self.device = device
         self.action_dim = action_shape[0]
@@ -293,6 +300,14 @@ class SQARAgent:
         self.weight_decay = weight_decay
         self.levels = levels
         self.bins = bins
+
+        # Physics-informed params
+        self.use_fk_reg = use_fk_reg
+        self.use_eikonal = use_eikonal
+        self.nu = nu
+        self.kappa = kappa
+        self.num_walks = num_walks
+        self.fk_weight = fk_weight
 
         # Build a simple namespace for config params needed by NN_mlpc_qc
         class _Cfg:
@@ -399,6 +414,11 @@ class SQARAgent:
         metrics = dict()
         cfg = self._loss_cfg
 
+        # Enable gradient tracking on inputs if Eikonal is active
+        if self.use_eikonal:
+            low_dim_obs = low_dim_obs.detach().clone().requires_grad_(True)
+            rgb_obs = rgb_obs.detach().clone().requires_grad_(True)
+
         actions_d = encode_action(
             action, self.low, self.high, self.levels, self.bins
         ).long()
@@ -502,12 +522,62 @@ class SQARAgent:
             qf1_loss += cql_adv1_diff * cfg["cql_min_q_weight"]
             qf2_loss += cql_adv2_diff * cfg["cql_min_q_weight"]
 
-        metrics["qf1_loss"] = (qf1_loss.mean().item()
-                               if torch.is_tensor(qf1_loss) else qf1_loss)
-        metrics["qf2_loss"] = (qf2_loss.mean().item()
-                               if torch.is_tensor(qf2_loss) else qf2_loss)
+        # Ensure losses are tensors so we can add physics losses
+        if isinstance(qf1_loss, (int, float)):
+            qf1_loss = torch.tensor(0.0, device=self.device)
+        if isinstance(qf2_loss, (int, float)):
+            qf2_loss = torch.tensor(0.0, device=self.device)
+
+        metrics["qf1_loss"] = qf1_loss.mean().item()
+        metrics["qf2_loss"] = qf2_loss.mean().item()
 
         critic_loss = qf1_loss + qf2_loss
+
+        # ── Eikonal loss ─────────────────────────────────────────────
+        if self.use_eikonal:
+            v_s = (v1_pred + v2_pred) / 2.0  # [B, 1]
+            grads = torch.autograd.grad(
+                outputs=v_s.sum(),
+                inputs=(low_dim_obs, rgb_obs),
+                create_graph=True,
+                retain_graph=True,
+                only_inputs=True,
+                allow_unused=True,
+            )
+            grad_v = grads[0] if grads[0] is not None else grads[1]
+            if len(grad_v.shape) > 2:
+                grad_v = grad_v.reshape(grad_v.shape[0], -1)
+            grad_norm = torch.linalg.norm(grad_v, dim=-1)  # [B]
+            current_speed = torch.ones((low_dim_obs.shape[0],), device=self.device)
+            max_slope = self.kappa / (current_speed + 1e-6)
+            slope_excess = torch.relu(grad_norm - max_slope)
+            eikonal_loss = slope_excess.pow(2).mean()
+            critic_loss = critic_loss + self.fk_weight * eikonal_loss
+            metrics["eikonal_loss"] = eikonal_loss.item()
+
+        # ── FK Walk-on-Spheres loss ──────────────────────────────────
+        if self.use_fk_reg:
+            B, D_obs = low_dim_obs.shape
+            sigma = (2.0 * self.nu) ** 0.5
+            noise = torch.randn(B, self.num_walks, D_obs, device=self.device) * sigma
+            flat_low_dim = (low_dim_obs.unsqueeze(1) + noise).view(B * self.num_walks, D_obs)
+            flat_rgb = rgb_obs.unsqueeze(1).expand(
+                -1, self.num_walks, *rgb_obs.shape[1:]
+            ).reshape(B * self.num_walks, *rgb_obs.shape[1:])
+            v1_neighbors = self.qf1.forward_value_soft(flat_rgb, flat_low_dim).view(B, self.num_walks)
+            v2_neighbors = self.qf2.forward_value_soft(flat_rgb, flat_low_dim).view(B, self.num_walks)
+            v_neighbors = (v1_neighbors + v2_neighbors) / 2.0  # [B, num_walks]
+            v_anchor = ((v1_pred + v2_pred) / 2.0).detach()  # [B, 1]
+            diff = (v_neighbors - v_anchor).abs()
+            grad_epsilon = torch.linalg.norm(noise, dim=-1) + 1e-6  # [B, num_walks]
+            grad_estimate = diff / grad_epsilon
+            current_speed = torch.ones((B,), device=self.device)
+            max_slope = self.kappa / (current_speed + 1e-6)
+            slope_excess = torch.relu(grad_estimate - max_slope.unsqueeze(1))
+            fk_loss = slope_excess.pow(2).mean()
+            critic_loss = critic_loss + self.fk_weight * fk_loss
+            metrics["fk_loss"] = fk_loss.item()
+            metrics["avg_grad_norm"] = grad_estimate.mean().item()
 
         self.encoder_opt.zero_grad(set_to_none=True)
         self.critic_opt.zero_grad(set_to_none=True)
