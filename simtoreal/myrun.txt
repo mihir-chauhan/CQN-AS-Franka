@@ -37,3 +37,42 @@ Traceback (most recent call last):
   File "/home/bera/CQN-AS-Franka/rlbench_src/cqn_as.py", line 94, in forward
     obs = obs / 255.0 - 0.5
 torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.29 GiB. GPU 0 has a total capacity of 7.65 GiB of which 643.38 MiB is free. Process 20298 has 77.74 MiB memory in use. Including non-PyTorch memory, this process has 6.67 GiB memory in use. Of the allocated memory 6.55 GiB is allocated by PyTorch, and 28.24 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+
+
+
+
+
+
+
+RUN THIS:
+
+python -m simtoreal.train_real \
+    --agent arsq \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-demos 10 \
+    --demo-dir ./runs/shelf_4cam/demos \
+    --save-dir ./runs/shelf_4cam
+
+
+
+python -m simtoreal.train_real \
+    --agent arsq \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ./runs/shelf_4cam/demos \
+    --save-dir ./runs/shelf_4cam \
+    --batch-size 32 \
+    --use-fk-reg \
+    --fk-weight 1.0 \
+    --kappa 0.1 \
+    --nu 0.01 \
+    --num-walks 10
+
+
+python -m simtoreal.eval_real \
+    --snapshot ./runs/shelf_4cam/snapshot.pt \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --episodes 5
