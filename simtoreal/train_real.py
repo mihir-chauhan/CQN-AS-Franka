@@ -120,7 +120,7 @@ def parse_args():
     p.add_argument("--robot-ip", type=str, default="192.168.131.41")
     p.add_argument("--home-q", type=str, default=None,
                    help="JSON list of 7 joint angles for home pose")
-    p.add_argument("--joint-delta-clip", type=float, default=0.05)
+    p.add_argument("--joint-delta-clip", type=float, default=0.25)
     p.add_argument("--velocity-factor", type=float, default=0.4)
 
     # Cameras — training requires all 4 views: front, wrist, left_shoulder, right_shoulder
