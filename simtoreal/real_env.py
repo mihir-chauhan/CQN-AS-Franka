@@ -28,9 +28,11 @@ from dm_env import StepType, specs
 # franky for robot control
 from franky import (
     Affine,
+    CartesianMotion,
     Gripper,
     JointWaypoint,
     JointWaypointMotion,
+    ReferenceType,
     RelativeDynamicsFactor,
     Robot,
 )
@@ -511,6 +513,357 @@ class RealFrankaEnv:
                 )
             )
         print(f"[Demo] Recorded {len(timesteps)} steps")
+        return timesteps
+
+    def record_teleop_demo(
+        self,
+        hz: float = 10.0,
+        max_steps: int = 500,
+        reward_at_end: float = 1.0,
+    ) -> list[ExtendedTimeStep]:
+        """
+        Record a demonstration via keyboard teleop.
+
+        Uses the same key bindings as simtoreal.teleop but records
+        observations + joint deltas. Your hands stay on the keyboard
+        (away from cameras), so the visual observations match what the
+        robot sees during autonomous execution.
+
+        Keys (same as teleop.py):
+          W/S = +X/-X   A/D = -Y/+Y   R/F = +Z/-Z  (TRANSLATE)
+          T = toggle to ORIENT mode (W/S=pitch, A/D=yaw, Q/E=roll)
+          SPACE = toggle gripper   1/2/3 = speed   ESC = end demo
+        """
+        import fcntl
+        import os
+        import sys
+        import termios
+        import tty
+        from scipy.spatial.transform import Rotation as Rot
+
+        STEP_PRESETS = {"1": 0.010, "2": 0.025, "3": 0.050}
+        ROT_PRESETS  = {"1": 0.03,  "2": 0.06,  "3": 0.10}
+        TELEOP_DYN = RelativeDynamicsFactor(0.5, 0.25, 0.25)
+
+        # Save & restore robot dynamics after demo
+        saved_dynamics = self._dynamics
+
+        print(
+            f"[Teleop Demo] Recording at {hz} Hz, max {max_steps} steps.\n"
+            "  W/S/A/D/R/F = translate   T = toggle orient mode\n"
+            "  SPACE = gripper   1/2/3 = speed   ESC = finish demo"
+        )
+
+        self._low_dim_obses.clear()
+        for frames in self._frames.values():
+            frames.clear()
+
+        dt = 1.0 / hz
+        step_m = STEP_PRESETS["2"]
+        rot_rad = ROT_PRESETS["2"]
+        translate_mode = True
+
+        joint_positions_list: list[np.ndarray] = []
+        gripper_open_list: list[float] = []
+        obs_list: list[dict] = []
+
+        # Set teleop dynamics
+        self._robot.relative_dynamics_factor = TELEOP_DYN
+
+        fd = sys.stdin.fileno()
+        old_term = termios.tcgetattr(fd)
+        old_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+
+        try:
+            tty.setcbreak(fd)
+            fcntl.fcntl(fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
+
+            for step_i in range(max_steps):
+                t0 = time.time()
+
+                # --- Read keys ---
+                keys: set[str] = set()
+                try:
+                    while True:
+                        ch = sys.stdin.read(1)
+                        if not ch:
+                            break
+                        keys.add(ch.lower())
+                except (IOError, BlockingIOError):
+                    pass
+
+                # ESC = end demo
+                if "\x1b" in keys:
+                    print(f"\n[Teleop Demo] Stopped at step {step_i}")
+                    break
+
+                # Toggle mode
+                if "t" in keys:
+                    translate_mode = not translate_mode
+                    mode = "TRANSLATE" if translate_mode else "ORIENT"
+                    print(f"  Mode: {mode}")
+
+                # Speed
+                for k in ("1", "2", "3"):
+                    if k in keys:
+                        step_m = STEP_PRESETS[k]
+                        rot_rad = ROT_PRESETS[k]
+
+                # Gripper
+                if " " in keys:
+                    if self._gripper_is_open:
+                        self._gripper.grasp(
+                            0.0, self._gripper_speed, self._gripper_force,
+                            epsilon_inner=1.0, epsilon_outer=1.0,
+                        )
+                        self._gripper_is_open = False
+                    else:
+                        self._gripper.open(self._gripper_speed)
+                        self._gripper_is_open = True
+
+                # --- Move robot ---
+                if translate_mode:
+                    dx, dy, dz = 0.0, 0.0, 0.0
+                    if "w" in keys: dx += step_m
+                    if "s" in keys: dx -= step_m
+                    if "a" in keys: dy -= step_m
+                    if "d" in keys: dy += step_m
+                    if "r" in keys: dz += step_m
+                    if "f" in keys: dz -= step_m
+                    if dx or dy or dz:
+                        try:
+                            self._robot.move(CartesianMotion(
+                                Affine([dx, dy, dz]),
+                                ReferenceType.Relative,
+                                TELEOP_DYN,
+                            ))
+                        except Exception:
+                            self._robot.recover_from_errors()
+                else:
+                    droll, dpitch, dyaw = 0.0, 0.0, 0.0
+                    if "w" in keys: dpitch += rot_rad
+                    if "s" in keys: dpitch -= rot_rad
+                    if "a" in keys: dyaw += rot_rad
+                    if "d" in keys: dyaw -= rot_rad
+                    if "q" in keys: droll -= rot_rad
+                    if "e" in keys: droll += rot_rad
+                    if droll or dpitch or dyaw:
+                        quat = Rot.from_euler(
+                            "xyz", [droll, dpitch, dyaw]
+                        ).as_quat()
+                        try:
+                            self._robot.move(CartesianMotion(
+                                Affine([0, 0, 0], quat),
+                                ReferenceType.Relative,
+                                TELEOP_DYN,
+                            ))
+                        except Exception:
+                            self._robot.recover_from_errors()
+
+                # --- Record observation ---
+                obs = self._get_obs()
+                q = np.array(
+                    self._robot.current_joint_state.position, dtype=np.float32
+                )
+                g = 1.0 if self._gripper_is_open else 0.0
+                joint_positions_list.append(q)
+                gripper_open_list.append(g)
+                obs_list.append(obs)
+
+                elapsed = time.time() - t0
+                if elapsed < dt:
+                    time.sleep(dt - elapsed)
+
+        except KeyboardInterrupt:
+            print(f"\n[Teleop Demo] Interrupted at step {len(obs_list)}")
+        finally:
+            # Restore terminal and dynamics
+            fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+            self._robot.relative_dynamics_factor = saved_dynamics
+
+        # Convert to ExtendedTimeSteps with delta-joint actions
+        timesteps: list[ExtendedTimeStep] = []
+        for i in range(len(obs_list)):
+            if i == 0:
+                action = np.zeros(8, dtype=np.float32)
+                step_type = StepType.FIRST
+                reward, discount = 0.0, 1.0
+            else:
+                delta = joint_positions_list[i] - joint_positions_list[i - 1]
+                gripper = gripper_open_list[i]
+                action = np.concatenate([delta, [gripper]]).astype(np.float32)
+                if i == len(obs_list) - 1:
+                    step_type = StepType.LAST
+                    reward, discount = reward_at_end, 0.0
+                else:
+                    step_type = StepType.MID
+                    reward, discount = 0.0, 1.0
+
+            timesteps.append(
+                ExtendedTimeStep(
+                    rgb_obs=obs_list[i]["rgb_obs"],
+                    low_dim_obs=obs_list[i]["low_dim_obs"],
+                    step_type=step_type,
+                    action=action,
+                    reward=reward,
+                    discount=discount,
+                    demo=1.0,
+                )
+            )
+        print(f"[Teleop Demo] Recorded {len(timesteps)} steps")
+        return timesteps
+
+    # ------------------------------------------------------------------
+    # Waypoint-based demonstration replay
+    # ------------------------------------------------------------------
+
+    def replay_waypoint_demo(
+        self,
+        waypoint_path: str,
+        hz: float = 10.0,
+        reward_at_end: float = 1.0,
+    ) -> list[ExtendedTimeStep]:
+        """
+        Replay a saved trajectory file autonomously while recording obs.
+
+        The trajectory file contains dense joint positions recorded during
+        freedrive at some rate.  This method homes the robot, then steps
+        through every recorded position via JointWaypointMotion while
+        recording camera + joint observations at *hz*.  No hand in frame.
+
+        Parameters
+        ----------
+        waypoint_path : str or Path
+            Path to a .json trajectory file from record_waypoints.py.
+        hz : float
+            Observation recording rate during replay.
+        reward_at_end : float
+            Reward injected at the terminal timestep.
+        """
+        import json
+
+        with open(waypoint_path, "r") as f:
+            data = json.load(f)
+        waypoints = data["waypoints"]
+        rec_hz = data.get("hz", hz)
+        print(f"[Waypoint Demo] Replaying {len(waypoints)} samples "
+              f"(recorded at {rec_hz} Hz) from {waypoint_path}")
+
+        # Clear frame stacks
+        self._low_dim_obses.clear()
+        for frames in self._frames.values():
+            frames.clear()
+
+        dt = 1.0 / hz
+        joint_positions_list: list[np.ndarray] = []
+        gripper_open_list: list[float] = []
+        obs_list: list[dict] = []
+
+        # Home the robot first
+        self.reset()
+
+        for wp_idx, wp in enumerate(waypoints):
+            t0 = time.time()
+            target_q = wp["joints"]
+            gripper_open = wp["gripper_open"]
+
+            # Handle gripper state change
+            if gripper_open and not self._gripper_is_open:
+                self._gripper.open(self._gripper_speed)
+                self._gripper_is_open = True
+            elif not gripper_open and self._gripper_is_open:
+                self._gripper.grasp(
+                    0.0, self._gripper_speed, self._gripper_force,
+                    epsilon_inner=1.0, epsilon_outer=1.0,
+                )
+                self._gripper_is_open = False
+
+            # Move to this position
+            try:
+                motion = JointWaypointMotion(
+                    [JointWaypoint(target_q)],
+                    self._dynamics,
+                )
+                self._robot.move(motion)
+            except Exception as e:
+                print(f"[Waypoint Demo] Motion error at sample {wp_idx}: {e}")
+                self._robot.recover_from_errors()
+                time.sleep(0.3)
+
+            # Record observation after reaching this position
+            obs = self._get_obs()
+            q = np.array(
+                self._robot.current_joint_state.position, dtype=np.float32
+            )
+            g = 1.0 if self._gripper_is_open else 0.0
+            joint_positions_list.append(q)
+            gripper_open_list.append(g)
+            obs_list.append(obs)
+
+            # Maintain recording rate
+            elapsed = time.time() - t0
+            if elapsed < dt:
+                time.sleep(dt - elapsed)
+
+            if (wp_idx + 1) % 50 == 0:
+                print(f"  ... {wp_idx + 1}/{len(waypoints)} samples replayed")
+
+        # Convert to ExtendedTimeSteps with delta-joint actions
+        timesteps: list[ExtendedTimeStep] = []
+        for i in range(len(obs_list)):
+            if i == 0:
+                action = np.zeros(8, dtype=np.float32)
+                step_type = StepType.FIRST
+                reward, discount = 0.0, 1.0
+            else:
+                delta = joint_positions_list[i] - joint_positions_list[i - 1]
+                gripper = gripper_open_list[i]
+                action = np.concatenate([delta, [gripper]]).astype(np.float32)
+                if i == len(obs_list) - 1:
+                    step_type = StepType.LAST
+                    reward, discount = reward_at_end, 0.0
+                else:
+                    step_type = StepType.MID
+                    reward, discount = 0.0, 1.0
+
+            timesteps.append(
+                ExtendedTimeStep(
+                    rgb_obs=obs_list[i]["rgb_obs"],
+                    low_dim_obs=obs_list[i]["low_dim_obs"],
+                    step_type=step_type,
+                    action=action,
+                    reward=reward,
+                    discount=discount,
+                    demo=1.0,
+                )
+            )
+        print(f"[Waypoint Demo] Recorded {len(timesteps)} steps from {len(waypoints)} trajectory samples")
+
+        # --- Reverse retrace: follow the trajectory backwards to return ---
+        # This avoids a direct home path that could collide with objects.
+        # Open gripper first so we don't drag anything back.
+        if not self._gripper_is_open:
+            self._gripper.open(self._gripper_speed)
+            self._gripper_is_open = True
+
+        rev = list(reversed(waypoints))
+        print(f"[Waypoint Demo] Retracing {len(rev)} samples in reverse to return home...")
+        for ri, wp in enumerate(rev):
+            try:
+                motion = JointWaypointMotion(
+                    [JointWaypoint(wp["joints"])],
+                    self._dynamics,
+                )
+                self._robot.move(motion)
+            except Exception as e:
+                print(f"[Waypoint Demo] Reverse motion error at step {ri}: {e}")
+                self._robot.recover_from_errors()
+                time.sleep(0.3)
+            if (ri + 1) % 50 == 0:
+                print(f"  ... {ri + 1}/{len(rev)} reverse samples")
+        print("[Waypoint Demo] Retrace complete, robot back at start.")
+
         return timesteps
 
     # ------------------------------------------------------------------
