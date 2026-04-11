@@ -46,23 +46,23 @@ torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.29 GiB. GPU 0 ha
 
 RUN THIS:
 
-python -m simtoreal.train_real \
+python train_real.py \
     --agent arsq \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --num-demos 10 \
-    --demo-dir ./runs/shelf_4cam/demos \
-    --save-dir ./runs/shelf_4cam
+    --demo-dir ../runs/shelf_4cam/demos \
+    --save-dir ../runs/shelf_4cam
 
 
 
-python -m simtoreal.train_real \
+python train_real.py \
     --agent arsq \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --load-demos-only \
-    --demo-dir ./runs/shelf_4cam/demos \
-    --save-dir ./runs/shelf_4cam \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --save-dir ../runs/shelf_4cam \
     --batch-size 32 \
     --use-fk-reg \
     --fk-weight 1.0 \
@@ -71,8 +71,8 @@ python -m simtoreal.train_real \
     --num-walks 10
 
 
-python -m simtoreal.eval_real \
-    --snapshot ./runs/shelf_4cam/snapshot.pt \
+python eval_real.py \
+    --snapshot ../runs/shelf_4cam/snapshot.pt \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --episodes 5
