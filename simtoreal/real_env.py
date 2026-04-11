@@ -345,7 +345,8 @@ class RealFrankaEnv:
         joint_delta = raw[:7]
         gripper_cmd = raw[7]
 
-        # Safety clamp on delta
+        # Safety clamp on delta (should be >= demo action range to avoid
+        # throttling the agent below demo speed)
         joint_delta = np.clip(
             joint_delta, -self._joint_delta_clip, self._joint_delta_clip
         )
@@ -530,6 +531,19 @@ class RealFrankaEnv:
 
     def set_action_stats(self, stats: dict[str, np.ndarray]):
         self._action_stats = stats
+        # Auto-set joint_delta_clip from demo range so the agent can
+        # reproduce demo speeds.  Use the expanded range (with 20% margin)
+        # to match _convert_action_to_raw.
+        a_max = np.max(np.abs(np.concatenate([
+            stats["max"][:7], stats["min"][:7]
+        ])))
+        expanded = a_max + np.fabs(a_max) * 0.2
+        new_clip = max(float(expanded), self._joint_delta_clip)
+        if new_clip > self._joint_delta_clip:
+            print(f"[RealFrankaEnv] Auto-adjusting joint_delta_clip: "
+                  f"{self._joint_delta_clip:.4f} → {new_clip:.4f} "
+                  f"(from demo action range)")
+            self._joint_delta_clip = new_clip
 
     def get_action_stats(self) -> dict[str, np.ndarray]:
         return self._action_stats
