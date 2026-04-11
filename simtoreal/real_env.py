@@ -723,14 +723,16 @@ class RealFrankaEnv:
         waypoint_path: str,
         hz: float = 10.0,
         reward_at_end: float = 1.0,
+        subsample: int = 5,
     ) -> list[ExtendedTimeStep]:
         """
         Replay a saved trajectory file autonomously while recording obs.
 
         The trajectory is split into segments at gripper-state changes.
-        Each segment is executed as a single smooth JointWaypointMotion
-        (all samples batched into one call) while a background thread
-        records camera + joint observations at *hz*.  No hand in frame.
+        Each segment's joint positions are subsampled (every *subsample*-th
+        point, always including first and last) and sent as a single smooth
+        JointWaypointMotion.  A background thread records camera + joint
+        observations at *hz* while the robot moves.  No hand in frame.
         """
         import json
         import threading
@@ -771,8 +773,9 @@ class RealFrankaEnv:
         if cur_joints:
             segments.append((cur_grip, cur_joints))
 
-        print(f"[Waypoint Demo] {len(segments)} segment(s) "
-              f"({', '.join(str(len(s[1])) + ' pts' for s in segments)})")
+        for si, (g, pts) in enumerate(segments):
+            grip_str = "open" if g else "closed"
+            print(f"  Segment {si}: {len(pts)} pts, gripper {grip_str}")
 
         # --- Execute each segment as one smooth motion ---
         for seg_idx, (gripper_open, joint_list) in enumerate(segments):
@@ -789,8 +792,19 @@ class RealFrankaEnv:
                 self._gripper_is_open = False
                 time.sleep(0.3)
 
-            # One smooth motion through ALL points in this segment
-            joint_waypoints = [JointWaypoint(q) for q in joint_list]
+            # Subsample: every Nth point, always include first and last
+            if len(joint_list) <= subsample * 2:
+                sampled = joint_list  # too few to subsample
+            else:
+                indices = list(range(0, len(joint_list), subsample))
+                if indices[-1] != len(joint_list) - 1:
+                    indices.append(len(joint_list) - 1)
+                sampled = [joint_list[i] for i in indices]
+
+            print(f"  Segment {seg_idx}: {len(joint_list)} pts → "
+                  f"{len(sampled)} motion waypoints (subsample={subsample})")
+
+            joint_waypoints = [JointWaypoint(q) for q in sampled]
             motion = JointWaypointMotion(joint_waypoints, REPLAY_DYN)
 
             motion_done = threading.Event()
@@ -876,12 +890,15 @@ class RealFrankaEnv:
             self._gripper.open(self._gripper_speed)
             self._gripper_is_open = True
 
-        rev_joints = [wp["joints"] for wp in reversed(waypoints)]
-        rev_waypoints = [JointWaypoint(q) for q in rev_joints]
-        print(f"[Waypoint Demo] Retracing {len(rev_joints)} samples "
+        all_joints = [wp["joints"] for wp in waypoints]
+        rev_indices = list(range(len(all_joints) - 1, -1, -subsample))
+        if rev_indices[-1] != 0:
+            rev_indices.append(0)
+        rev_sampled = [JointWaypoint(all_joints[i]) for i in rev_indices]
+        print(f"[Waypoint Demo] Retracing {len(rev_sampled)} waypoints "
               f"in reverse to return home...")
         try:
-            self._robot.move(JointWaypointMotion(rev_waypoints, REPLAY_DYN))
+            self._robot.move(JointWaypointMotion(rev_sampled, REPLAY_DYN))
         except Exception as e:
             print(f"[Waypoint Demo] Reverse motion error: {e}")
             self._robot.recover_from_errors()
