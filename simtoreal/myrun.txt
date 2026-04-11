@@ -87,7 +87,7 @@ python eval_real.py \
 
 # ── Step 1: Record trajectories by hand (no cameras, just joints) ──
 cd simtoreal
-python -m simtoreal.record_waypoints \
+python record_waypoints.py \
     --robot-ip 192.168.131.41 \
     --num-demos 10 \
     --hz 10 \
@@ -119,6 +119,7 @@ python train_real.py \
     --kappa 0.1 \
     --nu 0.01 \
     --num-walks 10
+    --save-every 400
 
 
 # ── Step 4: Evaluate ──
