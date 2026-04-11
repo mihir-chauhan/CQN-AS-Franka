@@ -732,22 +732,43 @@ class RealFrankaEnv:
         reward_at_end: float = 1.0,
     ) -> list[ExtendedTimeStep]:
         """
-        Replay a saved trajectory file with smooth batched motion + correct
-        gripper timing.
+        Replay a saved trajectory file — fully sequential, no batching.
 
-        Strategy:
-        - Split trajectory into segments at gripper-change boundaries.
-        - Each segment is executed as a single smooth JointWaypointMotion
-          with a background thread recording observations at ``hz``.
-        - AFTER each segment finishes, the gripper state for the NEXT
-          segment is applied.  This ensures the gripper only changes at
-          the exact position the user toggled it during recording.
+        For each waypoint:
+          1. Move to the joint position
+          2. Poll until robot actually reaches it (not just command sent)
+          3. Apply gripper change if needed
+          4. Record one observation
+
+        Then reverse-retrace every waypoint one at a time.
         """
         import json
-        import threading
 
-        REPLAY_DYN = RelativeDynamicsFactor(0.4, 0.15, 0.1)
-        SUBSAMPLE = 5  # use every Nth waypoint for smooth motion
+        REPLAY_DYN = RelativeDynamicsFactor(0.3, 0.1, 0.1)
+
+        # Tolerance for "robot has arrived" check (radians)
+        POSITION_TOL = 0.01  # ~0.6 degrees per joint
+        SETTLE_TIMEOUT = 5.0  # max seconds to wait for convergence
+
+        def _wait_for_position(target_q_list: list[float]):
+            """Block until robot joints are within tolerance of target."""
+            target = np.array(target_q_list, dtype=np.float64)
+            t0 = time.time()
+            while time.time() - t0 < SETTLE_TIMEOUT:
+                current = np.array(
+                    self._robot.current_joint_state.position,
+                    dtype=np.float64,
+                )
+                err = np.max(np.abs(current - target))
+                if err < POSITION_TOL:
+                    return
+                time.sleep(0.02)  # 50 Hz poll
+            # Timed out — print warning but continue
+            current = np.array(
+                self._robot.current_joint_state.position, dtype=np.float64
+            )
+            err = np.max(np.abs(current - target))
+            print(f"  [WARN] Settle timeout: max joint error = {err:.4f} rad")
 
         with open(waypoint_path, "r") as f:
             data = json.load(f)
@@ -761,7 +782,6 @@ class RealFrankaEnv:
         for frames in self._frames.values():
             frames.clear()
 
-        dt = 1.0 / hz
         joint_positions_list: list[np.ndarray] = []
         gripper_open_list: list[float] = []
         obs_list: list[dict] = []
@@ -769,112 +789,56 @@ class RealFrankaEnv:
         # Home the robot first
         self.reset()
 
-        # ── Split into segments at gripper transitions ──
-        segments: list[list[dict]] = []
-        cur_seg: list[dict] = []
-        for wp in waypoints:
-            if cur_seg and wp["gripper_open"] != cur_seg[-1]["gripper_open"]:
-                segments.append(cur_seg)
-                cur_seg = [cur_seg[-1]]  # overlap last point for continuity
-            cur_seg.append(wp)
-        if cur_seg:
-            segments.append(cur_seg)
+        for wp_idx, wp in enumerate(waypoints):
+            target_q = wp["joints"]
+            gripper_open = wp["gripper_open"]
 
-        print(f"[Waypoint Demo] Split into {len(segments)} segments "
-              f"(gripper changes at segment boundaries)")
-
-        # ── Helper: background observation recorder ──
-        def _record_loop(
-            stop_event: threading.Event,
-            out_obs: list[dict],
-            out_q: list[np.ndarray],
-            out_g: list[float],
-            gripper_open_val: float,
-        ):
-            while not stop_event.is_set():
-                t0 = time.time()
-                obs = self._get_obs()
-                q = np.array(
-                    self._robot.current_joint_state.position,
-                    dtype=np.float32,
-                )
-                out_q.append(q)
-                out_g.append(gripper_open_val)
-                out_obs.append(obs)
-                elapsed = time.time() - t0
-                if elapsed < dt:
-                    stop_event.wait(dt - elapsed)
-
-        # ── Execute each segment: move smooth, THEN change gripper ──
-        for seg_idx, seg in enumerate(segments):
-            # Current gripper value for this segment (stays constant
-            # throughout — the next segment will change it)
-            g_val = 1.0 if self._gripper_is_open else 0.0
-
-            # Build subsampled waypoints for smooth motion
-            jw_list = []
-            for i in range(0, len(seg), SUBSAMPLE):
-                jw_list.append(JointWaypoint(seg[i]["joints"]))
-            # Always include the last point
-            if len(seg) > 1:
-                last_jw = JointWaypoint(seg[-1]["joints"])
-                if jw_list[-1] != last_jw:
-                    jw_list.append(last_jw)
-
-            # Start recording thread
-            stop_ev = threading.Event()
-            seg_obs: list[dict] = []
-            seg_q: list[np.ndarray] = []
-            seg_g: list[float] = []
-            rec_thread = threading.Thread(
-                target=_record_loop,
-                args=(stop_ev, seg_obs, seg_q, seg_g, g_val),
-                daemon=True,
-            )
-            rec_thread.start()
-
-            # Execute smooth motion
+            # 1. Issue move command
+            move_ok = False
             try:
-                motion = JointWaypointMotion(jw_list, REPLAY_DYN)
+                motion = JointWaypointMotion(
+                    [JointWaypoint(target_q)],
+                    REPLAY_DYN,
+                )
                 self._robot.move(motion)
+                move_ok = True
             except Exception as e:
-                print(f"[Waypoint Demo] Segment {seg_idx} motion error: {e}")
+                print(f"[Waypoint Demo] Motion error at sample {wp_idx}: {e}")
                 self._robot.recover_from_errors()
-                time.sleep(0.3)
+                time.sleep(0.5)
 
-            # Stop recording
-            stop_ev.set()
-            rec_thread.join(timeout=2.0)
+            # 2. Wait until robot has PHYSICALLY arrived at the target
+            #    Skip if move failed — robot didn't go anywhere
+            if move_ok:
+                _wait_for_position(target_q)
 
-            # Capture one final observation at the stopped position
+            # 3. NOW apply gripper — robot is confirmed at the position
+            if gripper_open and not self._gripper_is_open:
+                self._gripper.open(self._gripper_speed)
+                self._gripper_is_open = True
+                time.sleep(0.5)  # let gripper fully open
+            elif not gripper_open and self._gripper_is_open:
+                self._gripper.grasp(
+                    0.0, self._gripper_speed, self._gripper_force,
+                    epsilon_inner=1.0, epsilon_outer=1.0,
+                )
+                self._gripper_is_open = False
+                time.sleep(0.5)  # let gripper fully close
+
+            # 4. Record observation at this exact settled state
             obs = self._get_obs()
             q = np.array(
                 self._robot.current_joint_state.position, dtype=np.float32
             )
-            seg_obs.append(obs)
-            seg_q.append(q)
-            seg_g.append(g_val)
+            g = 1.0 if self._gripper_is_open else 0.0
+            joint_positions_list.append(q)
+            gripper_open_list.append(g)
+            obs_list.append(obs)
 
-            # Accumulate
-            obs_list.extend(seg_obs)
-            joint_positions_list.extend(seg_q)
-            gripper_open_list.extend(seg_g)
+            if (wp_idx + 1) % 50 == 0:
+                print(f"  ... {wp_idx + 1}/{len(waypoints)} samples replayed")
 
-            print(f"  Segment {seg_idx + 1}/{len(segments)}: "
-                  f"{len(seg_obs)} obs recorded, gripper={'open' if g_val else 'closed'}")
-
-            # ── NOW change gripper for the NEXT segment ──
-            if seg_idx < len(segments) - 1:
-                next_grip = segments[seg_idx + 1][-1]["gripper_open"]
-                if next_grip and not self._gripper_is_open:
-                    self._gripper.open(self._gripper_speed)
-                    self._gripper_is_open = True
-                elif not next_grip and self._gripper_is_open:
-                    self._gripper.grasp(
-                        0.0, self._gripper_speed, self._gripper_force,
-                        epsilon_inner=1.0, epsilon_outer=1.0,
-                    )
-                    self._gripper_is_open = False
+        print(f"[Waypoint Demo] Forward pass complete: {len(obs_list)} obs")
 
         # Convert to ExtendedTimeSteps with delta-joint actions
         timesteps: list[ExtendedTimeStep] = []
@@ -905,28 +869,40 @@ class RealFrankaEnv:
                     demo=1.0,
                 )
             )
-        print(f"[Waypoint Demo] Recorded {len(timesteps)} steps "
-              f"from {len(waypoints)} trajectory samples")
+        print(f"[Waypoint Demo] Recorded {len(timesteps)} steps")
 
-        # --- Reverse retrace: smooth batched motion back ---
+        # --- Reverse retrace: sequential, one waypoint at a time ---
+        # Open gripper first so we don't drag the object back
         if not self._gripper_is_open:
             self._gripper.open(self._gripper_speed)
             self._gripper_is_open = True
+            time.sleep(0.5)
 
         rev = list(reversed(waypoints))
-        jw_rev = []
-        for i in range(0, len(rev), SUBSAMPLE):
-            jw_rev.append(JointWaypoint(rev[i]["joints"]))
-        if len(rev) > 1:
-            jw_rev.append(JointWaypoint(rev[-1]["joints"]))
+        print(f"[Waypoint Demo] Retracing {len(rev)} waypoints in reverse "
+              "(sequential, one at a time)...")
+        for ri, wp in enumerate(rev):
+            move_ok = False
+            try:
+                motion = JointWaypointMotion(
+                    [JointWaypoint(wp["joints"])],
+                    REPLAY_DYN,
+                )
+                self._robot.move(motion)
+                move_ok = True
+            except Exception as e:
+                print(f"[Waypoint Demo] Reverse error at step {ri}: {e}")
+                self._robot.recover_from_errors()
+                time.sleep(0.5)
 
-        print(f"[Waypoint Demo] Retracing {len(jw_rev)} waypoints in reverse...")
-        try:
-            self._robot.move(JointWaypointMotion(jw_rev, REPLAY_DYN))
-        except Exception as e:
-            print(f"[Waypoint Demo] Reverse motion error: {e}")
-            self._robot.recover_from_errors()
-        print("[Waypoint Demo] Retrace complete, robot back at start.")
+            # Wait until robot actually reaches the reverse waypoint
+            # before issuing the next one — prevents jumps
+            if move_ok:
+                _wait_for_position(wp["joints"])
+
+            if (ri + 1) % 50 == 0:
+                print(f"  ... {ri + 1}/{len(rev)} reverse steps")
+        print("[Waypoint Demo] Retrace complete.")
 
         return timesteps
 
