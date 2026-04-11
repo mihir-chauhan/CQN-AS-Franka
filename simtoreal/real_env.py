@@ -735,18 +735,40 @@ class RealFrankaEnv:
         Replay a saved trajectory file — fully sequential, no batching.
 
         For each waypoint:
-          1. Move to the joint position (single waypoint motion, blocks)
-          2. Apply gripper change if needed (blocks)
-          3. Record one observation
+          1. Move to the joint position
+          2. Poll until robot actually reaches it (not just command sent)
+          3. Apply gripper change if needed
+          4. Record one observation
 
         Then reverse-retrace every waypoint one at a time.
-        Slow but guarantees correct ordering and no jumps.
         """
         import json
 
-        # Slow dynamics — each move is tiny (0.1s of recorded motion)
-        # so we can afford conservative speeds for safety
         REPLAY_DYN = RelativeDynamicsFactor(0.3, 0.1, 0.1)
+
+        # Tolerance for "robot has arrived" check (radians)
+        POSITION_TOL = 0.01  # ~0.6 degrees per joint
+        SETTLE_TIMEOUT = 5.0  # max seconds to wait for convergence
+
+        def _wait_for_position(target_q_list: list[float]):
+            """Block until robot joints are within tolerance of target."""
+            target = np.array(target_q_list, dtype=np.float64)
+            t0 = time.time()
+            while time.time() - t0 < SETTLE_TIMEOUT:
+                current = np.array(
+                    self._robot.current_joint_state.position,
+                    dtype=np.float64,
+                )
+                err = np.max(np.abs(current - target))
+                if err < POSITION_TOL:
+                    return
+                time.sleep(0.02)  # 50 Hz poll
+            # Timed out — print warning but continue
+            current = np.array(
+                self._robot.current_joint_state.position, dtype=np.float64
+            )
+            err = np.max(np.abs(current - target))
+            print(f"  [WARN] Settle timeout: max joint error = {err:.4f} rad")
 
         with open(waypoint_path, "r") as f:
             data = json.load(f)
@@ -771,32 +793,39 @@ class RealFrankaEnv:
             target_q = wp["joints"]
             gripper_open = wp["gripper_open"]
 
-            # 1. Move to this waypoint (blocks until arrived)
+            # 1. Issue move command
+            move_ok = False
             try:
                 motion = JointWaypointMotion(
                     [JointWaypoint(target_q)],
                     REPLAY_DYN,
                 )
                 self._robot.move(motion)
+                move_ok = True
             except Exception as e:
                 print(f"[Waypoint Demo] Motion error at sample {wp_idx}: {e}")
                 self._robot.recover_from_errors()
-                time.sleep(0.3)
+                time.sleep(0.5)
 
-            # 2. Apply gripper state AFTER arriving at position
+            # 2. Wait until robot has PHYSICALLY arrived at the target
+            #    Skip if move failed — robot didn't go anywhere
+            if move_ok:
+                _wait_for_position(target_q)
+
+            # 3. NOW apply gripper — robot is confirmed at the position
             if gripper_open and not self._gripper_is_open:
                 self._gripper.open(self._gripper_speed)
                 self._gripper_is_open = True
-                time.sleep(0.3)
+                time.sleep(0.5)  # let gripper fully open
             elif not gripper_open and self._gripper_is_open:
                 self._gripper.grasp(
                     0.0, self._gripper_speed, self._gripper_force,
                     epsilon_inner=1.0, epsilon_outer=1.0,
                 )
                 self._gripper_is_open = False
-                time.sleep(0.3)
+                time.sleep(0.5)  # let gripper fully close
 
-            # 3. Record observation at this exact state
+            # 4. Record observation at this exact settled state
             obs = self._get_obs()
             q = np.array(
                 self._robot.current_joint_state.position, dtype=np.float32
@@ -853,16 +882,24 @@ class RealFrankaEnv:
         print(f"[Waypoint Demo] Retracing {len(rev)} waypoints in reverse "
               "(sequential, one at a time)...")
         for ri, wp in enumerate(rev):
+            move_ok = False
             try:
                 motion = JointWaypointMotion(
                     [JointWaypoint(wp["joints"])],
                     REPLAY_DYN,
                 )
                 self._robot.move(motion)
+                move_ok = True
             except Exception as e:
                 print(f"[Waypoint Demo] Reverse error at step {ri}: {e}")
                 self._robot.recover_from_errors()
-                time.sleep(0.3)
+                time.sleep(0.5)
+
+            # Wait until robot actually reaches the reverse waypoint
+            # before issuing the next one — prevents jumps
+            if move_ok:
+                _wait_for_position(wp["joints"])
+
             if (ri + 1) % 50 == 0:
                 print(f"  ... {ri + 1}/{len(rev)} reverse steps")
         print("[Waypoint Demo] Retrace complete.")
