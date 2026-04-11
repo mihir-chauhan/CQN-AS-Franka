@@ -1,4 +1,5 @@
 *.pyc
 exp_local
 bigym
+runs/
 humanoid_bench
