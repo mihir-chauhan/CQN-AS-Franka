@@ -153,6 +153,12 @@ def parse_args():
                    help="If set, save/load demos to/from this directory")
     p.add_argument("--load-demos-only", action="store_true",
                    help="Load demos from --demo-dir instead of recording")
+    p.add_argument("--demo-mode", choices=["freedrive", "teleop", "waypoint"], default="teleop",
+                   help="'freedrive' = kinesthetic (hand-guided), "
+                        "'teleop' = keyboard-controlled (no hand in frame), "
+                        "'waypoint' = replay pre-recorded waypoint files (no hand in frame)")
+    p.add_argument("--waypoint-dir", type=str, default=None,
+                   help="Directory containing waypoint .json files from record_waypoints.py")
 
     # Training
     p.add_argument("--num-train-steps", type=int, default=50000)
@@ -280,18 +286,57 @@ def build_camera_rig(args) -> CameraRig:
 
 
 def collect_demos(env: RealFrankaEnv, args) -> list[list]:
-    """Record kinesthetic demonstrations interactively."""
+    """Record demonstrations interactively (freedrive, teleop, or waypoint replay)."""
+    demo_mode = getattr(args, "demo_mode", "freedrive")
+
+    if demo_mode == "waypoint":
+        # Replay pre-recorded waypoint files
+        wp_dir = getattr(args, "waypoint_dir", None)
+        if not wp_dir:
+            raise ValueError("--waypoint-dir is required when --demo-mode=waypoint")
+        wp_dir = Path(wp_dir)
+        wp_files = sorted(wp_dir.glob("waypoints_*.json"))
+        if not wp_files:
+            raise FileNotFoundError(f"No waypoints_*.json files found in {wp_dir}")
+        print(f"[Waypoint] Found {len(wp_files)} waypoint files in {wp_dir}")
+        demos = []
+        for i, wp_path in enumerate(wp_files):
+            print(f"\n[Demo {i+1}/{len(wp_files)}] Replaying {wp_path.name}...")
+            demo = env.replay_waypoint_demo(
+                waypoint_path=str(wp_path),
+                hz=args.demo_hz,
+            )
+            demos.append(demo)
+            if args.demo_dir:
+                demo_path = Path(args.demo_dir)
+                demo_path.mkdir(parents=True, exist_ok=True)
+                save_demo(demo, demo_path / f"demo_{i:04d}.npz")
+        return demos
+
+    use_teleop = demo_mode == "teleop"
     demos = []
     for i in range(args.num_demos):
-        input(
-            f"\n[Demo {i+1}/{args.num_demos}] "
-            "Put robot in freedrive mode, position it at the start, "
-            "then press ENTER to begin recording..."
-        )
-        demo = env.record_demo(
-            hz=args.demo_hz,
-            max_steps=args.demo_max_steps,
-        )
+        if use_teleop:
+            input(
+                f"\n[Demo {i+1}/{args.num_demos}] "
+                "Robot will be controlled via keyboard teleop.\n"
+                "  Press ENTER to start, then use W/S/A/D/R/F to move.\n"
+                "  Press ESC when the demo is complete."
+            )
+            demo = env.record_teleop_demo(
+                hz=args.demo_hz,
+                max_steps=args.demo_max_steps,
+            )
+        else:
+            input(
+                f"\n[Demo {i+1}/{args.num_demos}] "
+                "Put robot in freedrive mode, position it at the start, "
+                "then press ENTER to begin recording..."
+            )
+            demo = env.record_demo(
+                hz=args.demo_hz,
+                max_steps=args.demo_max_steps,
+            )
         demos.append(demo)
 
         # Optionally save each demo immediately
