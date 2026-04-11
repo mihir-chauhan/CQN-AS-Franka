@@ -348,6 +348,72 @@ def load_demos(demo_dir: str, env: RealFrankaEnv) -> list[list]:
     return demos
 
 
+def _compute_action_stats_from_files(demo_dir: str) -> dict[str, np.ndarray]:
+    """Lightweight first pass: only load action arrays to compute min/max."""
+    demo_files = sorted(Path(demo_dir).glob("demo_*.npz"))
+    if not demo_files:
+        raise FileNotFoundError(f"No demo files found in {demo_dir}")
+    all_actions = []
+    for path in demo_files:
+        with np.load(str(path)) as data:
+            all_actions.append(data["action"].copy())
+    actions = np.concatenate(all_actions, axis=0)
+    action_max = np.hstack([np.max(actions, 0)[:-1], 1])
+    action_min = np.hstack([np.min(actions, 0)[:-1], 0])
+    return {"max": action_max, "min": action_min}
+
+
+def _stream_demos_into_buffers(
+    demo_dir: str,
+    real_env: RealFrankaEnv,
+    buffer_a,
+    buffer_b,
+) -> int:
+    """Stream demos from disk one file at a time into two replay buffers.
+
+    This avoids loading all demo data into memory simultaneously.
+    Each .npz is opened, timesteps are created and fed to both buffers,
+    then the file data is freed before the next demo is loaded.
+    """
+    import gc
+    from dm_env import StepType
+    from simtoreal.real_env import ExtendedTimeStep
+
+    demo_files = sorted(Path(demo_dir).glob("demo_*.npz"))
+    total = 0
+    for path in demo_files:
+        # Load all arrays once (avoids repeated decompression)
+        with np.load(str(path)) as data:
+            rgb_all = data["rgb_obs"]
+            low_dim_all = data["low_dim_obs"]
+            action_all = data["action"]
+            reward_all = data["reward"]
+            discount_all = data["discount"]
+            step_type_all = data["step_type"]
+        # NpzFile closed. Local vars hold the decompressed numpy arrays.
+        n = len(action_all)
+        for i in range(n):
+            ts = ExtendedTimeStep(
+                rgb_obs=rgb_all[i],
+                low_dim_obs=low_dim_all[i],
+                action=real_env._convert_action_from_raw(action_all[i]),
+                reward=float(reward_all[i]),
+                discount=float(discount_all[i]),
+                step_type=StepType(int(step_type_all[i])),
+                demo=1.0,
+            )
+            buffer_a.add(ts)
+            buffer_b.add(ts)
+        total += n
+        # Free decompressed arrays before loading the next file
+        del rgb_all, low_dim_all, action_all, reward_all
+        del discount_all, step_type_all
+        print(f"  Loaded {path.name} ({n} steps)")
+        _log_mem(f"after {path.name}")
+        gc.collect()
+    return total
+
+
 # ============================================================================
 # Agent construction
 # ============================================================================
@@ -479,33 +545,11 @@ def main():
     )
 
     # ------------------------------------------------------------------
-    # 2. Collect or load demonstrations
+    # 2. Setup replay buffers
     # ------------------------------------------------------------------
     print("=" * 60)
     real_env: RealFrankaEnv = env._env  # unwrap to access demo recording
 
-    if args.load_demos_only and args.demo_dir:
-        print(f"Loading demos from {args.demo_dir}...")
-        demos = load_demos(args.demo_dir, real_env)
-    else:
-        print(f"Recording {args.num_demos} kinesthetic demos...")
-        demos = collect_demos(real_env, args)
-
-    # Compute & save action stats from demos
-    action_stats = real_env.extract_action_stats(demos)
-    real_env.set_action_stats(action_stats)
-    real_env.save_action_stats(str(save_dir / "action_stats.npz"))
-
-    # Rescale demo actions to [-1, 1]
-    demos = [real_env.rescale_demo_actions(d) for d in demos]
-    print(f"Action stats: min={action_stats['min']}, max={action_stats['max']}")
-    _log_mem("after loading/rescaling demos")
-
-    # ------------------------------------------------------------------
-    # 3. Setup replay buffers + insert demos
-    # ------------------------------------------------------------------
-    print("=" * 60)
-    print("Setting up replay buffers and inserting demos...")
     data_specs = (
         env.rgb_raw_observation_spec(),
         env.low_dim_raw_observation_spec(),
@@ -516,21 +560,14 @@ def main():
     )
 
     if use_cqn:
-        # CQN-AS: disk-backed replay via ReplayBufferStorage
-        replay_storage = ReplayBufferStorage(
+        buffer_a = ReplayBufferStorage(
             data_specs, save_dir / "buffer", use_relabeling=True,
         )
-        demo_replay_storage = ReplayBufferStorage(
+        buffer_b = ReplayBufferStorage(
             data_specs, save_dir / "demo_buffer", use_relabeling=True,
         )
-        for demo in demos:
-            for ts in demo:
-                replay_storage.add(ts)
-                demo_replay_storage.add(ts)
-        print(f"Loaded {len(replay_storage)} demo transitions into buffers")
     else:
-        # ARSQ: in-memory ReplayBufferBatch
-        replay_buffer = ReplayBufferBatch(
+        buffer_a = ReplayBufferBatch(
             data_specs,
             use_relabeling=True,
             is_demo_buffer=False,
@@ -540,7 +577,7 @@ def main():
             do_always_bootstrap=False,
             frame_stack=args.frame_stack,
         )
-        demo_replay_buffer = ReplayBufferBatch(
+        buffer_b = ReplayBufferBatch(
             data_specs,
             use_relabeling=True,
             is_demo_buffer=True,
@@ -550,18 +587,60 @@ def main():
             do_always_bootstrap=False,
             frame_stack=args.frame_stack,
         )
-        for demo in demos:
-            for ts in demo:
-                replay_buffer.add(ts)
-                demo_replay_buffer.add(ts)
-        print(f"Loaded {len(replay_buffer)} transitions into replay, "
-              f"{len(demo_replay_buffer)} into demo replay")
 
-    # Free demo data from memory
-    del demos
-    import gc; gc.collect()
-    print("Demo data freed from memory.")
-    _log_mem("after freeing demos")
+    # ------------------------------------------------------------------
+    # 3. Load / collect demonstrations → stream into buffers
+    # ------------------------------------------------------------------
+    print("=" * 60)
+    import gc
+
+    if args.load_demos_only and args.demo_dir:
+        # --- Memory-efficient path: stream from disk one file at a time ---
+        print(f"Computing action stats from {args.demo_dir}...")
+        action_stats = _compute_action_stats_from_files(args.demo_dir)
+        real_env.set_action_stats(action_stats)
+        real_env.save_action_stats(str(save_dir / "action_stats.npz"))
+        print(f"Action stats: min={action_stats['min']}, max={action_stats['max']}")
+
+        print(f"Streaming demos from {args.demo_dir} into buffers...")
+        _log_mem("before streaming demos")
+        total_steps = _stream_demos_into_buffers(
+            args.demo_dir, real_env, buffer_a, buffer_b,
+        )
+        gc.collect()
+        print(f"Loaded {total_steps} timesteps into buffers.")
+        _log_mem("after streaming demos")
+    else:
+        # --- Interactive collection: demos are small, fits in memory ---
+        print(f"Recording {args.num_demos} kinesthetic demos...")
+        demos = collect_demos(real_env, args)
+
+        action_stats = real_env.extract_action_stats(demos)
+        real_env.set_action_stats(action_stats)
+        real_env.save_action_stats(str(save_dir / "action_stats.npz"))
+        print(f"Action stats: min={action_stats['min']}, max={action_stats['max']}")
+
+        # Insert one demo at a time, then free it
+        for di, demo in enumerate(demos):
+            demo = real_env.rescale_demo_actions(demo)
+            for ts in demo:
+                buffer_a.add(ts)
+                buffer_b.add(ts)
+            print(f"  Inserted demo {di} ({len(demo)} steps)")
+        del demos
+        gc.collect()
+        _log_mem("after inserting collected demos")
+
+    # Alias for the rest of the script
+    if use_cqn:
+        replay_storage = buffer_a
+        demo_replay_storage = buffer_b
+        print(f"Replay: {len(replay_storage)} transitions")
+    else:
+        replay_buffer = buffer_a
+        demo_replay_buffer = buffer_b
+        print(f"Replay: {len(replay_buffer)} transitions, "
+              f"Demo replay: {len(demo_replay_buffer)} transitions")
 
     # ------------------------------------------------------------------
     # 4. Build agent
