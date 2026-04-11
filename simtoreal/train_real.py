@@ -221,6 +221,12 @@ def parse_args():
     # Control
     p.add_argument("--control-hz", type=float, default=15.0)
 
+    # Human reward
+    p.add_argument("--human-reward", action="store_true", default=True,
+                   help="Prompt human for success/fail after each episode (y/n). "
+                        "Gives reward=1.0 on success for online RL.")
+    p.add_argument("--no-human-reward", dest="human_reward", action="store_false")
+
     return p.parse_args()
 
 
@@ -901,6 +907,27 @@ def main():
             sub_action = action  # ARSQ: already a single action
 
         time_step = env.step(sub_action)
+
+        # ── Human success signal: inject reward BEFORE buffer add ──
+        if args.human_reward and time_step.last():
+            while True:
+                ans = input("\n  >>> Task succeeded? [y/n]: ").strip().lower()
+                if ans in ("y", "n"):
+                    break
+            if ans == "y":
+                time_step = ExtendedTimeStep(
+                    rgb_obs=time_step.rgb_obs,
+                    low_dim_obs=time_step.low_dim_obs,
+                    step_type=time_step.step_type,
+                    action=time_step.action,
+                    reward=1.0,
+                    discount=0.0,
+                    demo=0.0,
+                )
+                print("  ✓ Success! reward=1.0")
+            else:
+                print("  ✗ No success.")
+
         episode_reward += time_step.reward
         if use_cqn:
             replay_storage.add(time_step)
@@ -935,6 +962,7 @@ def run_eval(env: ExtendedTimeStepWrapper, agent, args) -> float:
     use_te = use_cqn and args.temporal_ensemble
 
     total_reward = 0.0
+    num_success = 0
     for ep in range(args.num_eval_episodes):
         episode_step = 0
         time_step = env.reset()
@@ -967,6 +995,22 @@ def run_eval(env: ExtendedTimeStepWrapper, agent, args) -> float:
             time_step = env.step(sub_action)
             total_reward += time_step.reward
             episode_step += 1
+
+        # Human success signal for eval
+        if args.human_reward:
+            while True:
+                ans = input(f"\n  >>> Eval ep {ep+1}: Succeeded? [y/n]: ").strip().lower()
+                if ans in ("y", "n"):
+                    break
+            if ans == "y":
+                total_reward += 1.0
+                num_success += 1
+                print("  ✓ Success")
+            else:
+                print("  ✗ Fail")
+
+    if args.human_reward:
+        print(f"  [Eval] {num_success}/{args.num_eval_episodes} succeeded")
     return total_reward / max(args.num_eval_episodes, 1)
 
 
