@@ -121,7 +121,7 @@ def parse_args():
     p.add_argument("--home-q", type=str, default=None,
                    help="JSON list of 7 joint angles for home pose")
     p.add_argument("--joint-delta-clip", type=float, default=0.05)
-    p.add_argument("--velocity-factor", type=float, default=0.15)
+    p.add_argument("--velocity-factor", type=float, default=0.4)
 
     # Cameras — training requires all 4 views: front, wrist, left_shoulder, right_shoulder
     p.add_argument("--camera-mode", choices=["full", "orbbec", "wrist", "dummy"],
@@ -213,7 +213,7 @@ def parse_args():
     p.add_argument("--save-every", type=int, default=5000)
 
     # Control
-    p.add_argument("--control-hz", type=float, default=10.0)
+    p.add_argument("--control-hz", type=float, default=15.0)
 
     return p.parse_args()
 

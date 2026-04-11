@@ -146,7 +146,8 @@ class ExtendedTimeStepWrapper:
 _HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
 DEFAULT_HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
-HALF_VEL = RelativeDynamicsFactor(0.1, 0.01, 0.01)
+# Slow dynamics for homing only (safe return to start)
+HOME_VEL = RelativeDynamicsFactor(0.15, 0.05, 0.05)
 
 # ---------------------------------------------------------------------------
 # Safety limits
@@ -204,9 +205,9 @@ class RealFrankaEnv:
         frame_stack: int = 8,
         home_q: list | None = None,
         joint_delta_clip: float = 0.05,
-        velocity_factor: float = 0.1,
-        acceleration_factor: float = 0.01,
-        jerk_factor: float = 0.01,
+        velocity_factor: float = 0.4,
+        acceleration_factor: float = 0.15,
+        jerk_factor: float = 0.1,
         action_stats_path: str | None = None,
         gripper_speed: float = 0.1,
         gripper_force: float = 20.0,
@@ -235,12 +236,14 @@ class RealFrankaEnv:
         # Connect to robot
         self._robot = Robot(robot_ip)
         self._gripper = Gripper(robot_ip)
-        self._robot.relative_dynamics_factor = RelativeDynamicsFactor(
+        self._dynamics = RelativeDynamicsFactor(
             velocity=velocity_factor, acceleration=acceleration_factor, jerk=jerk_factor,
         )
+        self._robot.relative_dynamics_factor = self._dynamics
         self._robot.set_collision_behavior(50, 50)
         self._robot.recover_from_errors()
-        print(f"[RealFrankaEnv] Connected to {robot_ip}")
+        print(f"[RealFrankaEnv] Connected to {robot_ip} "
+              f"(vel={velocity_factor}, accel={acceleration_factor}, jerk={jerk_factor})")
 
         # Frame-stacking deques
         self._low_dim_obses: deque = deque([], maxlen=frame_stack)
@@ -300,10 +303,10 @@ class RealFrankaEnv:
 
         # Home robot
         self._robot.recover_from_errors()
-        time.sleep(1.0)  # let robot fully settle before planning
+        time.sleep(0.5)  # let robot settle
         motion = JointWaypointMotion(
             [JointWaypoint(self._home_q)],
-            HALF_VEL,
+            HOME_VEL,
         )
         try:
             self._robot.move(motion)
@@ -311,10 +314,10 @@ class RealFrankaEnv:
             print(f"[RealFrankaEnv] Homing failed: {e}")
             print("[RealFrankaEnv] Recovering and retrying...")
             self._robot.recover_from_errors()
-            time.sleep(2.0)
+            time.sleep(1.0)
             motion = JointWaypointMotion(
                 [JointWaypoint(self._home_q)],
-                HALF_VEL,
+                HOME_VEL,
             )
             self._robot.move(motion)
         self._gripper.open(self._gripper_speed)
@@ -375,7 +378,7 @@ class RealFrankaEnv:
         try:
             motion = JointWaypointMotion(
                 [JointWaypoint(target_q.tolist())],
-                HALF_VEL,
+                self._dynamics,
             )
             self._robot.move(motion)
         except Exception as e:
@@ -663,9 +666,9 @@ def make(
     frame_stack: int = 8,
     home_q: list | None = None,
     joint_delta_clip: float = 0.05,
-    velocity_factor: float = 0.1,
-    acceleration_factor: float = 0.01,
-    jerk_factor: float = 0.01,
+    velocity_factor: float = 0.4,
+    acceleration_factor: float = 0.15,
+    jerk_factor: float = 0.1,
     action_stats_path: str | None = None,
     gripper_speed: float = 0.1,
     gripper_force: float = 20.0,
