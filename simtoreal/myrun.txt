@@ -76,3 +76,54 @@ python eval_real.py \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --episodes 5
+
+
+
+
+
+
+
+
+
+# ── Step 1: Record trajectories by hand (no cameras, just joints) ──
+cd simtoreal
+python -m simtoreal.record_waypoints \
+    --robot-ip 192.168.131.41 \
+    --num-demos 10 \
+    --hz 10 \
+    --save-dir ../runs/shelf_4cam/waypoints
+
+
+# ── Step 2: Replay trajectories autonomously & record camera demos ──
+python train_real.py \
+    --agent arsq \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --demo-mode waypoint \
+    --waypoint-dir ../runs/shelf_4cam/waypoints \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --save-dir ../runs/shelf_4cam
+
+
+# ── Step 3: Train from recorded demos ──
+python train_real.py \
+    --agent arsq \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --save-dir ../runs/shelf_4cam \
+    --batch-size 32 \
+    --use-fk-reg \
+    --fk-weight 1.0 \
+    --kappa 0.1 \
+    --nu 0.01 \
+    --num-walks 10
+
+
+# ── Step 4: Evaluate ──
+python eval_real.py \
+    --snapshot ../runs/shelf_4cam/snapshot.pt \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --episodes 5
