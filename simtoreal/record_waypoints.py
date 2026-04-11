@@ -40,7 +40,7 @@ def record_one(robot: Robot, gripper: Gripper, demo_idx: int, hz: float) -> dict
     print(f"  Move the robot by hand (freedrive mode).  Recording at {hz} Hz.")
     print("  Commands:")
     print("    G      — toggle gripper open / close")
-    print("    ENTER  — finish this demo")
+    print("    SPACE  — finish this demo (gripper auto-opens after)")
     print("    Q      — abort this demo")
     input("  Press ENTER to start recording...")
 
@@ -79,7 +79,7 @@ def record_one(robot: Robot, gripper: Gripper, demo_idx: int, hz: float) -> dict
             except (IOError, BlockingIOError):
                 pass
 
-            if "\n" in keys or "\r" in keys:
+            if " " in keys:
                 break
 
             if "q" in keys:
@@ -108,6 +108,13 @@ def record_one(robot: Robot, gripper: Gripper, demo_idx: int, hz: float) -> dict
     finally:
         fcntl.fcntl(fd, fcntl.F_SETFL, old_flags)
         termios.tcsetattr(fd, termios.TCSADRAIN, old_term)
+
+    # Always open gripper after recording ends (NOT part of the data).
+    # This lets the user close the gripper as the final demo action
+    # without needing to re-open it manually.
+    if not gripper_open:
+        print("  Opening gripper (post-collection, not recorded)...")
+        gripper.open(0.1)
 
     if aborted:
         return None
