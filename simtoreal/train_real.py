@@ -90,7 +90,7 @@ from simtoreal.cameras import (
     make_orbbec_rig,
     make_wrist_only_rig,
 )
-from simtoreal.real_env import ExtendedTimeStepWrapper, RealFrankaEnv, make
+from simtoreal.real_env import ExtendedTimeStep, ExtendedTimeStepWrapper, RealFrankaEnv, make
 
 
 # ============================================================================
