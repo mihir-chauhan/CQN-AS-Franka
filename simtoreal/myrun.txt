@@ -125,6 +125,148 @@ python train_real.py \
 # ── Step 4: Evaluate ──
 python eval_real.py \
     --snapshot ../runs/shelf_4cam/snapshot.pt \
+    --action-stats ../runs/shelf_4cam/action_stats.npz \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --episodes 5
+
+
+# ═══════════════════════════════════════════════════════════════════
+# 3-WAY COMPARISON RUNS
+# Same demos, same cameras, same hyperparams.
+# Run each one sequentially (they all need the robot).
+# Pipe through tee to save logs for plotting.
+# ═══════════════════════════════════════════════════════════════════
+
+# Create output dirs first:
+# mkdir -p ../runs/compare_cqn_as ../runs/compare_arsq_base ../runs/compare_arsq_phys
+
+
+# ── RUN 1: CQN-AS (distributional RL + action sequences) ──
+python train_real.py \
+    --agent cqn \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --goal-pose goal_pose.json \
+    --num-train-steps 10000 \
+    --episode-length 200 \
+    --batch-size 32 \
+    --demo-batch-size 32 \
+    --eval-every 2000 \
+    --save-every 500 \
+    --save-dir ../runs/compare_cqn_as \
+    2>&1 | tee ../runs/compare_cqn_as/train.log
+
+
+# ── RUN 2: ARSQ-base (no physics regularization) ──
+python train_real.py \
+    --agent arsq \
+    --no-fk-reg \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --goal-pose goal_pose.json \
+    --num-train-steps 10000 \
+    --episode-length 200 \
+    --batch-size 32 \
+    --demo-batch-size 32 \
+    --eval-every 2000 \
+    --save-every 500 \
+    --save-dir ../runs/compare_arsq_base \
+    2>&1 | tee ../runs/compare_arsq_base/train.log
+
+
+# ── RUN 3: ARSQ + Physics (FK Walk-on-Spheres) ──
+python train_real.py \
+    --agent arsq \
+    --use-fk-reg \
+    --fk-weight 1.0 \
+    --kappa 0.1 \
+    --nu 0.01 \
+    --num-walks 10 \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/shelf_4cam/demos \
+    --goal-pose goal_pose.json \
+    --num-train-steps 10000 \
+    --episode-length 200 \
+    --batch-size 32 \
+    --demo-batch-size 32 \
+    --eval-every 2000 \
+    --save-every 500 \
+    --save-dir ../runs/compare_arsq_phys \
+    2>&1 | tee ../runs/compare_arsq_phys/train.log
+
+
+# ── After all 3 training runs: plot training comparison ──
+# (can run this on any machine — just copy the 3 .log files)
+python plot_comparison.py \
+    --logs ../runs/compare_cqn_as/train.log \
+         ../runs/compare_arsq_base/train.log \
+         ../runs/compare_arsq_phys/train.log \
+    --labels "CQN-AS" "ARSQ-base" "ARSQ+Physics" \
+    --save comparison_training.png
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EVALUATION RUNS (after training)
+# Run N eval episodes per model, same goal pose, same conditions.
+# ═══════════════════════════════════════════════════════════════════
+
+# ── EVAL 1: CQN-AS ──
+python eval_real.py \
+    --agent cqn \
+    --snapshot ../runs/compare_cqn_as/snapshot.pt \
+    --action-stats ../runs/compare_cqn_as/action_stats.npz \
+    --goal-pose goal_pose.json \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-episodes 10 \
+    --results-dir ../runs/compare_cqn_as \
+    2>&1 | tee ../runs/compare_cqn_as/eval.log
+
+# ── EVAL 2: ARSQ-base ──
+python eval_real.py \
+    --agent arsq \
+    --no-fk-reg \
+    --snapshot ../runs/compare_arsq_base/snapshot.pt \
+    --action-stats ../runs/compare_arsq_base/action_stats.npz \
+    --goal-pose goal_pose.json \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-episodes 10 \
+    --results-dir ../runs/compare_arsq_base \
+    2>&1 | tee ../runs/compare_arsq_base/eval.log
+
+# ── EVAL 3: ARSQ+Physics ──
+python eval_real.py \
+    --agent arsq \
+    --use-fk-reg \
+    --snapshot ../runs/compare_arsq_phys/snapshot.pt \
+    --action-stats ../runs/compare_arsq_phys/action_stats.npz \
+    --goal-pose goal_pose.json \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-episodes 10 \
+    --results-dir ../runs/compare_arsq_phys \
+    2>&1 | tee ../runs/compare_arsq_phys/eval.log
+
+
+# ── Compare all 3 eval results ──
+# (can run on any machine — just copy the eval_results.json files)
+python compare_evals.py \
+    --results ../runs/compare_cqn_as/eval_results.json \
+              ../runs/compare_arsq_base/eval_results.json \
+              ../runs/compare_arsq_phys/eval_results.json \
+    --labels "CQN-AS" "ARSQ-base" "ARSQ+Physics" \
+    --save eval_comparison.png
