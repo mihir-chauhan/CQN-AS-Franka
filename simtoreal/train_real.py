@@ -93,6 +93,48 @@ from simtoreal.cameras import (
 from simtoreal.real_env import ExtendedTimeStepWrapper, RealFrankaEnv, make
 
 
+# ============================================================================
+# Pose-based success detection
+# ============================================================================
+
+def load_goal_pose(path: str) -> dict:
+    """Load goal_pose.json → {'position': ndarray(3), 'quaternion': ndarray(4)}."""
+    with open(path, "r") as f:
+        data = json.load(f)
+    return {
+        "position": np.array(data["position"], dtype=np.float64),
+        "quaternion": np.array(data["quaternion_xyzw"], dtype=np.float64),
+    }
+
+
+def quat_distance(q1: np.ndarray, q2: np.ndarray) -> float:
+    """Quaternion distance: 1 - |q1·q2|.  Returns 0 (identical) to 1 (180°)."""
+    dot = np.abs(np.dot(q1, q2))
+    return 1.0 - min(dot, 1.0)
+
+
+def check_success(
+    real_env: RealFrankaEnv,
+    goal: dict,
+    pos_thresh: float,
+    quat_thresh: float,
+) -> bool:
+    """Check if current EE pose is within thresholds of goal."""
+    result = real_env.get_ee_pose()
+    if result is None:
+        print("  [AutoReward] Could not read EE pose — marking fail")
+        return False
+    pos, quat = result
+    pos_err = np.linalg.norm(pos - goal["position"])
+    q_err = quat_distance(quat, goal["quaternion"])
+    success = pos_err <= pos_thresh and q_err <= quat_thresh
+    symbol = "✓" if success else "✗"
+    print(f"  [{symbol} AutoReward] pos_err={pos_err*100:.1f}cm "
+          f"(thresh={pos_thresh*100:.1f}cm) | "
+          f"quat_err={q_err:.3f} (thresh={quat_thresh:.3f})")
+    return success
+
+
 def _log_mem(label: str = ""):
     """Print current process RSS memory usage."""
     proc = psutil.Process()
@@ -221,11 +263,16 @@ def parse_args():
     # Control
     p.add_argument("--control-hz", type=float, default=15.0)
 
-    # Human reward
-    p.add_argument("--human-reward", action="store_true", default=True,
-                   help="Prompt human for success/fail after each episode (y/n). "
-                        "Gives reward=1.0 on success for online RL.")
-    p.add_argument("--no-human-reward", dest="human_reward", action="store_false")
+    # Success detection
+    p.add_argument("--goal-pose", type=str, default=None,
+                   help="Path to goal_pose.json from save_goal_pose.py. "
+                        "Auto-detects success by EE position + orientation.")
+    p.add_argument("--success-pos-thresh", type=float, default=0.0254,
+                   help="Position tolerance in metres (default: 0.0254 = 1 inch)")
+    p.add_argument("--success-quat-thresh", type=float, default=0.05,
+                   help="Quaternion distance threshold (default: 0.05 ≈ 18°)")
+    p.add_argument("--human-reward", action="store_true", default=False,
+                   help="Fallback: prompt human for success/fail (y/n).")
 
     return p.parse_args()
 
@@ -601,6 +648,19 @@ def main():
     print("=" * 60)
     real_env: RealFrankaEnv = env._env  # unwrap to access demo recording
 
+    # Load goal pose for automatic success detection
+    goal_pose = None
+    if args.goal_pose:
+        goal_pose = load_goal_pose(args.goal_pose)
+        print(f"[AutoReward] Goal loaded from {args.goal_pose}")
+        print(f"  pos={goal_pose['position']}  quat={goal_pose['quaternion']}")
+        print(f"  thresholds: pos={args.success_pos_thresh*100:.1f}cm, "
+              f"quat={args.success_quat_thresh:.3f}")
+    elif not args.human_reward:
+        print("[WARNING] No --goal-pose and no --human-reward: "
+              "all episodes get reward=0 (demo-only BC mode)")
+
+
     data_specs = (
         env.rgb_raw_observation_spec(),
         env.low_dim_raw_observation_spec(),
@@ -840,6 +900,7 @@ def main():
                 print("  [Eval] Running evaluation episodes...")
                 eval_reward = run_eval(
                     env, agent, args,
+                    real_env=real_env, goal_pose=goal_pose,
                 )
                 print(f"  [Eval] Mean reward: {eval_reward:.3f}")
 
@@ -908,13 +969,22 @@ def main():
 
         time_step = env.step(sub_action)
 
-        # ── Human success signal: inject reward BEFORE buffer add ──
-        if args.human_reward and time_step.last():
-            while True:
-                ans = input("\n  >>> Task succeeded? [y/n]: ").strip().lower()
-                if ans in ("y", "n"):
-                    break
-            if ans == "y":
+        # ── Success detection: inject reward BEFORE buffer add ──
+        if time_step.last():
+            episode_success = False
+            if goal_pose is not None:
+                episode_success = check_success(
+                    real_env, goal_pose,
+                    args.success_pos_thresh, args.success_quat_thresh,
+                )
+            elif args.human_reward:
+                while True:
+                    ans = input("\n  >>> Task succeeded? [y/n]: ").strip().lower()
+                    if ans in ("y", "n"):
+                        break
+                episode_success = ans == "y"
+
+            if episode_success:
                 time_step = ExtendedTimeStep(
                     rgb_obs=time_step.rgb_obs,
                     low_dim_obs=time_step.low_dim_obs,
@@ -955,7 +1025,9 @@ def main():
 # ============================================================================
 
 
-def run_eval(env: ExtendedTimeStepWrapper, agent, args) -> float:
+def run_eval(env: ExtendedTimeStepWrapper, agent, args,
+             real_env: RealFrankaEnv | None = None,
+             goal_pose: dict | None = None) -> float:
     """Run evaluation episodes — works for both CQN-AS and ARSQ."""
     use_cqn = args.agent == "cqn"
     action_sequence = args.action_sequence
@@ -996,21 +1068,26 @@ def run_eval(env: ExtendedTimeStepWrapper, agent, args) -> float:
             total_reward += time_step.reward
             episode_step += 1
 
-        # Human success signal for eval
-        if args.human_reward:
+        # Success detection for eval
+        ep_success = False
+        if goal_pose is not None and real_env is not None:
+            ep_success = check_success(
+                real_env, goal_pose,
+                args.success_pos_thresh, args.success_quat_thresh,
+            )
+        elif args.human_reward:
             while True:
                 ans = input(f"\n  >>> Eval ep {ep+1}: Succeeded? [y/n]: ").strip().lower()
                 if ans in ("y", "n"):
                     break
-            if ans == "y":
-                total_reward += 1.0
-                num_success += 1
-                print("  ✓ Success")
-            else:
-                print("  ✗ Fail")
+            ep_success = ans == "y"
 
-    if args.human_reward:
-        print(f"  [Eval] {num_success}/{args.num_eval_episodes} succeeded")
+        if ep_success:
+            total_reward += 1.0
+            num_success += 1
+
+    print(f"  [Eval] {num_success}/{args.num_eval_episodes} succeeded "
+          f"({num_success/max(args.num_eval_episodes,1)*100:.0f}%)")
     return total_reward / max(args.num_eval_episodes, 1)
 
 

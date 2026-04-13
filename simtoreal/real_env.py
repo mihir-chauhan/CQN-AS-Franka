@@ -986,6 +986,17 @@ class RealFrankaEnv:
             print(f"[SAFETY] Could not read EE pose: {e}")
             return None
 
+    def get_ee_pose(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """Return (position [x,y,z], quaternion [x,y,z,w]) of end-effector."""
+        try:
+            ee = self._robot.current_cartesian_state.pose.end_effector_pose
+            pos = np.array(ee.translation, dtype=np.float64)
+            quat = np.array(ee.quaternion, dtype=np.float64)  # xyzw
+            return pos, quat
+        except Exception as e:
+            print(f"[get_ee_pose] Could not read EE pose: {e}")
+            return None
+
     @staticmethod
     def _is_outside_workspace(ee_pos: np.ndarray) -> bool:
         """True if *any* coordinate is outside the safe box."""
