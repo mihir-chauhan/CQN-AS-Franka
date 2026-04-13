@@ -66,7 +66,44 @@ from simtoreal.cameras import (
     make_orbbec_rig,
     make_wrist_only_rig,
 )
-from simtoreal.real_env import ExtendedTimeStepWrapper, make
+from simtoreal.real_env import ExtendedTimeStepWrapper, RealFrankaEnv, make
+
+
+def _load_goal_pose(path: str) -> dict:
+    """Load goal_pose.json → {'position': ndarray(3), 'quaternion': ndarray(4)}."""
+    with open(path, "r") as f:
+        data = json.load(f)
+    return {
+        "position": np.array(data["position"], dtype=np.float64),
+        "quaternion": np.array(data["quaternion_xyzw"], dtype=np.float64),
+    }
+
+
+def _quat_distance(q1: np.ndarray, q2: np.ndarray) -> float:
+    """Quaternion distance: 1 - |q1·q2|.  Returns 0 (identical) to 1 (180°)."""
+    return 1.0 - min(abs(float(np.dot(q1, q2))), 1.0)
+
+
+def _check_success(
+    real_env: RealFrankaEnv,
+    goal: dict,
+    pos_thresh: float,
+    quat_thresh: float,
+) -> bool:
+    """Check if current EE pose is within thresholds of goal."""
+    result = real_env.get_ee_pose()
+    if result is None:
+        print("  [AutoSuccess] Could not read EE pose — marking fail")
+        return False
+    pos, quat = result
+    pos_err = np.linalg.norm(pos - goal["position"])
+    q_err = _quat_distance(quat, goal["quaternion"])
+    success = pos_err <= pos_thresh and q_err <= quat_thresh
+    symbol = "✓" if success else "✗"
+    print(f"  [{symbol} AutoSuccess] pos_err={pos_err*100:.1f}cm "
+          f"(thresh={pos_thresh*100:.1f}cm) | "
+          f"quat_err={q_err:.3f} (thresh={quat_thresh:.3f})")
+    return success
 
 
 def parse_args():
@@ -152,6 +189,18 @@ def parse_args():
     p.add_argument("--kappa", type=float, default=0.1)
     p.add_argument("--num-walks", type=int, default=10)
     p.add_argument("--fk-weight", type=float, default=1.0)
+
+    # Auto-success detection
+    p.add_argument("--goal-pose", type=str, default=None,
+                   help="Path to goal_pose.json for auto success detection")
+    p.add_argument("--success-pos-thresh", type=float, default=0.0254,
+                   help="Position threshold in meters (default 1 inch)")
+    p.add_argument("--success-quat-thresh", type=float, default=0.05,
+                   help="Quaternion distance threshold (default ~18 deg)")
+
+    # Results
+    p.add_argument("--results-dir", type=str, default=None,
+                   help="Directory to save eval_results.json (default: same as snapshot)")
 
     # Misc
     p.add_argument("--dry-run", action="store_true",
@@ -339,6 +388,24 @@ def main():
     use_cqn = args.agent == "cqn"
     use_te = use_cqn and args.temporal_ensemble
 
+    # Goal-pose auto-success detection
+    real_env: RealFrankaEnv = env._env  # unwrap ExtendedTimeStepWrapper
+    goal_pose = None
+    if args.goal_pose:
+        goal_pose = _load_goal_pose(args.goal_pose)
+        print(f"[Eval] Auto-success: goal loaded from {args.goal_pose}")
+        print(f"       pos_thresh={args.success_pos_thresh*100:.1f}cm, "
+              f"quat_thresh={args.success_quat_thresh:.3f}")
+    else:
+        print("[Eval] Using human y/N for success labeling")
+
+    # Results directory
+    if args.results_dir:
+        results_save_dir = Path(args.results_dir)
+    else:
+        results_save_dir = Path(args.snapshot).parent
+    results_save_dir.mkdir(parents=True, exist_ok=True)
+
     # Video recording setup
     video_frames = []
     if args.save_video:
@@ -417,9 +484,15 @@ def main():
             f"  Episode {ep + 1}: steps={episode_step}, reward={episode_reward:.3f}"
         )
 
-        # Ask human for success label
-        success_input = input("  Was the task successful? [y/N]: ").strip().lower()
-        success = success_input in ("y", "yes", "1")
+        # Success detection — auto or human
+        if goal_pose is not None:
+            success = _check_success(
+                real_env, goal_pose,
+                args.success_pos_thresh, args.success_quat_thresh,
+            )
+        else:
+            success_input = input("  Was the task successful? [y/N]: ").strip().lower()
+            success = success_input in ("y", "yes", "1")
         results.append({
             "episode": ep + 1,
             "steps": episode_step,
@@ -460,7 +533,7 @@ def main():
     print(f"  Mean length:  {np.mean([r['steps'] for r in results]):.1f}")
 
     # Save results
-    results_path = Path(args.video_dir if args.save_video else ".") / "eval_results.json"
+    results_path = results_save_dir / "eval_results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\n  Results saved to {results_path}")
