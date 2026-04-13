@@ -310,17 +310,17 @@ class SQARAgent:
         self.fk_weight = fk_weight
 
         # Build a simple namespace for config params needed by NN_mlpc_qc
-        class _Cfg:
-            pass
-        cfg = _Cfg()
-        cfg.feature_dim = feature_dim
-        cfg.hidden_dim = hidden_dim
-        cfg.levels = levels
-        cfg.bins = bins
-        cfg.soft_alpha = soft_alpha
-        cfg.act_alpha = act_alpha if act_alpha is not None else soft_alpha
-        cfg.qchunk_size = qchunk_size
-        cfg.abl_skip = abl_skip
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(
+            feature_dim=feature_dim,
+            hidden_dim=hidden_dim,
+            levels=levels,
+            bins=bins,
+            soft_alpha=soft_alpha,
+            act_alpha=act_alpha if act_alpha is not None else soft_alpha,
+            qchunk_size=qchunk_size,
+            abl_skip=abl_skip,
+        )
         # Store loss config as dict for update_critic
         self._loss_cfg = {
             "bellman_loss_coef": bellman_loss_coef,
