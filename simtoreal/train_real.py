@@ -267,8 +267,8 @@ def parse_args():
     p.add_argument("--goal-pose", type=str, default=None,
                    help="Path to goal_pose.json from save_goal_pose.py. "
                         "Auto-detects success by EE position + orientation.")
-    p.add_argument("--success-pos-thresh", type=float, default=0.0254,
-                   help="Position tolerance in metres (default: 0.0254 = 1 inch)")
+    p.add_argument("--success-pos-thresh", type=float, default=0.0381,
+                   help="Position tolerance in metres (default: 0.0381 ≈ 1.5 inches)")
     p.add_argument("--success-quat-thresh", type=float, default=0.05,
                    help="Quaternion distance threshold (default: 0.05 ≈ 18°)")
     p.add_argument("--human-reward", action="store_true", default=False,
