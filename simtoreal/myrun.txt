@@ -108,18 +108,17 @@ python train_real.py \
 # ── Step 3: Train from recorded demos ──
 python train_real.py \
     --agent arsq \
+    --robot-ip 192.168.131.41 \
     --goal-pose goal_pose.json \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --load-demos-only \
     --demo-dir ../runs/shelf_4cam/demos \
     --save-dir ../runs/shelf_4cam \
+    --num-train-steps 10000 \
     --batch-size 32 \
-    --use-fk-reg \
-    --fk-weight 1.0 \
-    --kappa 0.1 \
-    --nu 0.01 \
-    --num-walks 10
+    --demo-batch-size 32 \
+    --eval-every 5000 \
     --save-every 400
 
 

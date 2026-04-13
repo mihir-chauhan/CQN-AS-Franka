@@ -864,10 +864,13 @@ def main():
     # ------------------------------------------------------------------
     print("=" * 60)
     print(f"Starting {args.agent.upper()} training for {args.num_train_steps} steps...")
+    print("  Ctrl+C once  → abort current episode & reset")
+    print("  Ctrl+C twice → save snapshot & exit")
 
     dt = 1.0 / args.control_hz
     episode_step = 0
     episode_reward = 0.0
+    _last_interrupt = 0.0  # timestamp of last Ctrl+C
 
     time_step = env.reset()
     if use_cqn and args.temporal_ensemble:
@@ -882,6 +885,7 @@ def main():
     timer = utils.Timer()
 
     while global_step < args.num_train_steps:
+      try:
         # Episode boundary
         if time_step.last():
             global_episode += 1
@@ -1012,6 +1016,33 @@ def main():
         elapsed = time.time() - t0
         if elapsed < dt:
             time.sleep(dt - elapsed)
+
+      except KeyboardInterrupt:
+        now = time.time()
+        if now - _last_interrupt < 2.0:
+            # Double Ctrl+C → save and exit
+            print("\n\n  [ABORT] Double Ctrl+C — saving and exiting...")
+            save_snapshot(save_dir, agent, global_step, global_episode,
+                          agent_type=args.agent)
+            env.close()
+            return
+        _last_interrupt = now
+        print(f"\n  [ABORT] Ctrl+C — aborting episode {global_episode + 1} "
+              f"(step {episode_step}). Resetting...")
+        # Don't increment global_step for the aborted episode
+        # Just reset and start fresh
+        time_step = env.reset()
+        if use_cqn and args.temporal_ensemble:
+            temporal_ensemble.reset()
+        if use_cqn:
+            replay_storage.add(time_step)
+            demo_replay_storage.add(time_step)
+        else:
+            replay_buffer.add(time_step)
+            demo_replay_buffer.add(time_step)
+        episode_step = 0
+        episode_reward = 0.0
+        continue
 
     # Final save
     save_snapshot(save_dir, agent, global_step, global_episode,
