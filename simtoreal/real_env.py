@@ -148,6 +148,13 @@ class ExtendedTimeStepWrapper:
 _HOME_NPY = Path(__file__).resolve().parent / "image_45.npy"
 DEFAULT_HOME_Q = np.load(str(_HOME_NPY)).tolist()
 
+# Load partial-home (safe intermediate waypoint before full home)
+_PARTIAL_HOME_NPY = Path(__file__).resolve().parent / "partialhome.npy"
+if _PARTIAL_HOME_NPY.exists():
+    DEFAULT_PARTIAL_HOME_Q: list | None = np.load(str(_PARTIAL_HOME_NPY)).tolist()
+else:
+    DEFAULT_PARTIAL_HOME_Q = None
+
 # Slow dynamics for homing only (safe return to start)
 HOME_VEL = RelativeDynamicsFactor(0.15, 0.05, 0.05)
 
@@ -310,14 +317,32 @@ class RealFrankaEnv:
             self._gripper_is_open = True
             time.sleep(0.3)
 
-        # Home robot
+        # ---------- Two-stage homing: partial home → full home ----------
         time.sleep(0.5)  # let robot settle
+
+        # Stage 1: move to partial home (safe intermediate position)
+        if DEFAULT_PARTIAL_HOME_Q is not None:
+            try:
+                motion_ph = JointWaypointMotion(
+                    [JointWaypoint(DEFAULT_PARTIAL_HOME_Q)],
+                    HOME_VEL,
+                )
+                self._robot.move(motion_ph)
+                # Wait until robot physically reaches partial home
+                self._wait_for_home(DEFAULT_PARTIAL_HOME_Q)
+            except Exception as e:
+                print(f"[RealFrankaEnv] Partial-home move failed: {e}")
+                self._robot.recover_from_errors()
+                time.sleep(1.0)
+
+        # Stage 2: move to full home
         motion = JointWaypointMotion(
             [JointWaypoint(self._home_q)],
             HOME_VEL,
         )
         try:
             self._robot.move(motion)
+            self._wait_for_home(self._home_q)
         except Exception as e:
             print(f"[RealFrankaEnv] Homing failed: {e}")
             print("[RealFrankaEnv] Recovering and retrying...")
@@ -328,6 +353,8 @@ class RealFrankaEnv:
                 HOME_VEL,
             )
             self._robot.move(motion)
+            self._wait_for_home(self._home_q)
+
         # Ensure gripper is open after homing
         self._gripper.open(self._gripper_speed)
         self._gripper_is_open = True
@@ -343,6 +370,23 @@ class RealFrankaEnv:
             discount=1.0,
             demo=0.0,
         )
+
+    def _wait_for_home(self, target_q_list: list, timeout: float = 8.0):
+        """Poll until joints reach target (used for homing stages)."""
+        target = np.array(target_q_list, dtype=np.float64)
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            current = np.array(
+                self._robot.current_joint_state.position, dtype=np.float64,
+            )
+            if np.max(np.abs(current - target)) < 0.01:
+                return
+            time.sleep(0.02)
+        err = np.max(np.abs(
+            np.array(self._robot.current_joint_state.position, dtype=np.float64)
+            - target
+        ))
+        print(f"  [WARN] Home settle timeout: max joint error = {err:.4f} rad")
 
     def step(self, action: np.ndarray) -> TimeStep:
         """
