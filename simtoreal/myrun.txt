@@ -108,6 +108,7 @@ python train_real.py \
 # ── Step 3: Train from recorded demos ──
 python train_real.py \
     --agent arsq \
+    --goal-pose goal_pose.json \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --load-demos-only \
