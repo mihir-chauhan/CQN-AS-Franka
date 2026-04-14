@@ -185,11 +185,8 @@ class ReplayBufferBatch:
         self._current_episode = defaultdict(list)
 
         self._num_steps = 0
-        self._ep_start = []
         self._ep_len = []
-        self._fs = {}
-        for spec in self._data_specs:
-            self._fs[spec.name] = None
+        self._episodes = []
 
 
     def set_online_buffer(self, online_buffer):
@@ -247,90 +244,66 @@ class ReplayBufferBatch:
         eplen = episode_len(episode) + 1 # total len
         assert eplen > 2
 
-        self._ep_start.append(self._num_steps)
         self._ep_len.append(eplen)
-        for spec in self._data_specs:
-            if self._fs[spec.name] is None:
-                self._fs[spec.name] = episode[spec.name]
-            else:
-                self._fs[spec.name] = np.concatenate([self._fs[spec.name], episode[spec.name]], axis=0)
+        self._episodes.append(episode)
         self._num_steps += eplen
 
-        assert self._num_steps == self._fs["reward"].shape[0]
-        assert self._ep_start[-1] + eplen == self._num_steps
-        assert len(self._ep_start) == len(self._ep_len)
-
-
         while self._num_steps - len(self._ep_len) > self._max_size: # transitions = num_steps - num_episodes
-            eplen = self._ep_len[0]
-
-            self._num_steps -= eplen
-            self._ep_start.pop(0)
-            self._ep_start = [x - eplen for x in self._ep_start]
-            self._ep_len.pop(0)
-
-            for spec in self._data_specs:
-                self._fs[spec.name] = self._fs[spec.name][eplen:]
+            evicted_eplen = self._ep_len.pop(0)
+            self._episodes.pop(0)
+            self._num_steps -= evicted_eplen
 
     def sample(self, bs):
-        ep_idxs = np.random.randint(0, len(self._ep_start), size=(bs,)) # [B]
-        ep_lens = np.array(self._ep_len)[ep_idxs] # [B]
-        ep_starts = np.array(self._ep_start)[ep_idxs] # [B]
+        ep_idxs = np.random.randint(0, len(self._episodes), size=(bs,))  # [B]
+        ep_lens = np.array(self._ep_len)[ep_idxs]  # [B]
 
-        idxs_step = np.random.randint(1, ep_lens - self._nstep + 1) # [B]
-        next_idxs_step = idxs_step + self._nstep - 1 # [B]
+        idxs_step = np.random.randint(1, ep_lens - self._nstep + 1)  # [B], 1-indexed local step
 
-        idxs = idxs_step + ep_starts # [B]
-        next_idxs = next_idxs_step + ep_starts # [B]
+        # Local frame indices within each episode: [B, frame_stack]
+        obs_local = idxs_step.reshape(-1, 1) - 1 + np.arange(-self._frame_stack + 1, 1).reshape(1, -1)
+        obs_local = np.clip(obs_local, 0, None)  # [B, frame_stack]
 
-        obs_idxs = idxs_step.reshape(-1, 1) - 1 # [B, 1]
-        obs_idxs = obs_idxs + np.arange(-self._frame_stack + 1, 1).reshape(1, -1) # [B, F]
-        obs_idxs = np.clip(obs_idxs, 0, None) # [B, F]
-        obs_idxs = obs_idxs + ep_starts.reshape(-1, 1) # [B, F]
-        obs_idxs = obs_idxs.reshape(-1) # [B * F]
+        next_idxs_step = idxs_step + self._nstep - 1  # [B]
+        obs_next_local = next_idxs_step.reshape(-1, 1) + np.arange(-self._frame_stack + 1, 1).reshape(1, -1)
+        obs_next_local = np.clip(obs_next_local, 0, None)  # [B, frame_stack]
 
-        obs_next_idxs = next_idxs_step.reshape(-1, 1) # [B, 1]
-        obs_next_idxs = obs_next_idxs + np.arange(-self._frame_stack + 1, 1).reshape(1, -1) # [B, F]
-        obs_next_idxs = np.clip(obs_next_idxs, 0, None) # [B, F]
-        obs_next_idxs = obs_next_idxs + ep_starts.reshape(-1, 1) # [B, F]
-        obs_next_idxs = obs_next_idxs.reshape(-1) # [B * F]
+        # rgb_obs stacking -- gather per episode then channel-wise concat
+        rgb_obs = np.array([self._episodes[ep_idxs[b]]["rgb_obs"][obs_local[b]] for b in range(bs)])
+        # [B, frame_stack, cams, C, H, W] -> [B, cams, frame_stack*C, H, W]
+        rgb_obs = rgb_obs.swapaxes(1, 2)  # [B, cams, frame_stack, C, H, W]
+        rgb_obs = rgb_obs.reshape(bs, rgb_obs.shape[1], -1, *rgb_obs.shape[4:])
 
-        # rgb_obs stacking -- channel-wise concat
-        rgb_obs = self._fs["rgb_obs"][obs_idxs] # [B * F, cams, C, H, W]
-        rgb_obs = rgb_obs.reshape(bs, self._frame_stack, *rgb_obs.shape[1:]) # [B, F, cams, C, H, W]
-        rgb_obs = rgb_obs.swapaxes(0, 1) # [F, B, cams, C, H, W]
-        rgb_obs = np.concatenate(rgb_obs, 2) # [B, cams, F * C, H, W]
-
-        next_rgb_obs = self._fs["rgb_obs"][obs_next_idxs] # [B * frame_stack, cams, C, H, W]
-        next_rgb_obs = next_rgb_obs.reshape(bs, self._frame_stack, *next_rgb_obs.shape[1:]) # [B, F, cams, C, H, W]
-        next_rgb_obs = next_rgb_obs.swapaxes(0, 1) # [F, B, cams, C, H, W]
-        next_rgb_obs = np.concatenate(next_rgb_obs, 2) # [B, cams, F * C, H, W]
+        next_rgb_obs = np.array([self._episodes[ep_idxs[b]]["rgb_obs"][obs_next_local[b]] for b in range(bs)])
+        next_rgb_obs = next_rgb_obs.swapaxes(1, 2)
+        next_rgb_obs = next_rgb_obs.reshape(bs, next_rgb_obs.shape[1], -1, *next_rgb_obs.shape[4:])
 
         # low_dim_obs stacking -- last-dim-wise concat
-        low_dim_obs = self._fs["low_dim_obs"][obs_idxs] # [B * F, low_dim]
-        low_dim_obs = low_dim_obs.reshape(bs, self._frame_stack, *low_dim_obs.shape[1:]) # [B, F, low_dim]
-        low_dim_obs = low_dim_obs.swapaxes(0, 1) # [F, B, low_dim]
-        low_dim_obs = np.concatenate(low_dim_obs, -1) # [B, F * low_dim]
+        low_dim_obs = np.array([self._episodes[ep_idxs[b]]["low_dim_obs"][obs_local[b]] for b in range(bs)])
+        # [B, frame_stack, low_dim] -> [B, frame_stack*low_dim]
+        low_dim_obs = low_dim_obs.swapaxes(0, 1)  # [frame_stack, B, low_dim]
+        low_dim_obs = np.concatenate(low_dim_obs, -1)  # [B, frame_stack*low_dim]
 
-        next_low_dim_obs = self._fs["low_dim_obs"][obs_next_idxs] # [B * F, low_dim]
-        next_low_dim_obs = next_low_dim_obs.reshape(bs, self._frame_stack, *next_low_dim_obs.shape[1:]) # [B, F, low_dim]
-        next_low_dim_obs = next_low_dim_obs.swapaxes(0, 1) # [F, B, low_dim]
-        next_low_dim_obs = np.concatenate(next_low_dim_obs, -1) # [B, F * low_dim]
+        next_low_dim_obs = np.array([self._episodes[ep_idxs[b]]["low_dim_obs"][obs_next_local[b]] for b in range(bs)])
+        next_low_dim_obs = next_low_dim_obs.swapaxes(0, 1)
+        next_low_dim_obs = np.concatenate(next_low_dim_obs, -1)
 
-        action = self._fs["action"][idxs] # [B, act_dim]
-        reward = np.zeros((bs, 1), dtype=self._fs["reward"].dtype) # [B, 1]
-        discount = np.ones((bs, 1), dtype=self._fs["discount"].dtype) # [B, 1]
+        action = np.array([self._episodes[ep_idxs[b]]["action"][idxs_step[b]] for b in range(bs)])
+
+        reward = np.zeros((bs, 1), dtype=np.float32)  # [B, 1]
+        discount = np.ones((bs, 1), dtype=np.float32)  # [B, 1]
 
         for i in range(self._nstep):
-            step_reward = self._fs["reward"][idxs + i].reshape(-1, 1) # [B, 1]
-            reward += discount * step_reward # [B, 1]
+            step_reward = np.array([self._episodes[ep_idxs[b]]["reward"][idxs_step[b] + i]
+                                    for b in range(bs)]).reshape(-1, 1)
+            reward += discount * step_reward
             if self._do_always_bootstrap:
-                _discount = np.ones((bs, 1), dtype=self._fs["discount"].dtype)
+                _discount = np.ones((bs, 1), dtype=np.float32)
             else:
-                _discount = self._fs["discount"][idxs + i].reshape(-1, 1)
-            discount *= _discount * self._discount # [B, 1]
+                _discount = np.array([self._episodes[ep_idxs[b]]["discount"][idxs_step[b] + i]
+                                      for b in range(bs)]).reshape(-1, 1)
+            discount *= _discount * self._discount
 
-        demo = self._fs["demo"][idxs] # [B, 1]
+        demo = np.array([self._episodes[ep_idxs[b]]["demo"][idxs_step[b]] for b in range(bs)])
 
         return (
             rgb_obs,
@@ -344,5 +317,5 @@ class ReplayBufferBatch:
         )
 
     def __len__(self):
-        return self._num_steps - len(self._ep_start)
+        return self._num_steps - len(self._episodes)
 
