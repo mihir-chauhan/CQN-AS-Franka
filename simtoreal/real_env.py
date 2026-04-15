@@ -1112,6 +1112,25 @@ class RealFrankaEnv:
             ),
         }
 
+    def close_gripper(self):
+        """Close / grasp the gripper."""
+        try:
+            self._gripper.grasp(
+                0.0, self._gripper_speed, self._gripper_force,
+                epsilon_inner=1.0, epsilon_outer=1.0,
+            )
+            self._gripper_is_open = False
+        except Exception as e:
+            print(f"[RealFrankaEnv] Gripper close failed: {e}")
+
+    def open_gripper(self):
+        """Open the gripper."""
+        try:
+            self._gripper.open(self._gripper_speed)
+            self._gripper_is_open = True
+        except Exception as e:
+            print(f"[RealFrankaEnv] Gripper open failed: {e}")
+
     def close(self):
         self._camera_rig.close()
         print("[RealFrankaEnv] Closed.")
