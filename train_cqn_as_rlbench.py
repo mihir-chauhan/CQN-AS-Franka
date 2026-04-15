@@ -1,4 +1,5 @@
 import logging
+import signal
 import warnings
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -13,7 +14,7 @@ from pathlib import Path
 import hydra
 import numpy as np
 import torch
-from dm_env import specs
+from dm_env import specs, StepType
 
 
 import rlbench_src.rlbench_env as rlbench_env
@@ -220,6 +221,23 @@ class Workspace:
 
         do_eval = False
 
+        # Ctrl+C handling: first press aborts current episode and continues,
+        # second press stops training.
+        _abort_episode = [False]
+        _stop_training = [False]
+
+        def _handle_interrupt(signum, frame):
+            if _abort_episode[0]:
+                # second Ctrl+C — stop after this episode ends
+                _stop_training[0] = True
+                print("\n[Ctrl+C] Stopping training after current episode...")
+            else:
+                _abort_episode[0] = True
+                print("\n[Ctrl+C] Aborting episode, continuing training... "
+                      "(Ctrl+C again to stop)")
+
+        prev_handler = signal.signal(signal.SIGINT, _handle_interrupt)
+
         episode_step, episode_reward = 0, 0
         time_step = self.train_env.reset()
         if self.cfg.temporal_ensemble:
@@ -237,7 +255,8 @@ class Workspace:
         self.demo_replay_storage.add(time_step)
         self.train_video_recorder.init(time_step.rgb_obs[0])
         metrics = None
-        while train_until_step(self.global_step):
+        try:
+          while train_until_step(self.global_step) and not _stop_training[0]:
             if time_step.last():
                 self._global_episode += 1
                 self.train_video_recorder.save(f"{self.global_frame}.mp4")
@@ -321,12 +340,22 @@ class Workspace:
                 sub_action = action[episode_step % self.cfg.action_sequence]
             sub_action = self.agent.add_noise_to_action(sub_action, self.global_step)
             time_step = self.train_env.step(sub_action)
+            # If Ctrl+C was pressed, force episode to end cleanly
+            if _abort_episode[0]:
+                _abort_episode[0] = False
+                time_step = time_step._replace(step_type=StepType.LAST, discount=1.0)
+                print(f"[Ctrl+C] Episode aborted at step {episode_step + 1}.")
             episode_reward += time_step.reward
             self.replay_storage.add(time_step)
             self.demo_replay_storage.add(time_step)
             self.train_video_recorder.record(time_step.rgb_obs[0])
             episode_step += 1
             self._global_step += 1
+        finally:
+          signal.signal(signal.SIGINT, prev_handler)
+          if _stop_training[0]:
+              print("[Ctrl+C] Training stopped. Saving snapshot...")
+              self.save_snapshot()
 
     def load_rlbench_demos(self):
         if self.cfg.num_demos > 0:

@@ -151,6 +151,7 @@ python train_real.py \
     --load-demos-only \
     --demo-dir ../runs/shelf_4cam/demos \
     --goal-pose goal_pose.json \
+    --resume ../runs/compare_cqn_as/snapshot.pt \
     --num-train-steps 10000 \
     --episode-length 200 \
     --batch-size 32 \
