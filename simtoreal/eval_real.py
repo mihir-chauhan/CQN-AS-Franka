@@ -480,6 +480,11 @@ def main():
             if elapsed < dt:
                 time.sleep(dt - elapsed)
 
+        # Close gripper at end of episode (hold object for inspection)
+        print("  Closing gripper...")
+        real_env.close_gripper()
+        time.sleep(0.5)
+
         print(
             f"  Episode {ep + 1}: steps={episode_step}, reward={episode_reward:.3f}"
         )
