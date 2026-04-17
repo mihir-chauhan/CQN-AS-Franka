@@ -50,6 +50,7 @@ import argparse
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -1026,12 +1027,20 @@ def main():
                           agent_type=args.agent)
             env.close()
             return
-        _last_interrupt = now
         print(f"\n  [ABORT] Ctrl+C — aborting episode {global_episode + 1} "
               f"(step {episode_step}). Resetting...")
-        # Don't increment global_step for the aborted episode
-        # Just reset and start fresh
-        time_step = env.reset()
+        # Ignore SIGINT while the robot homes so a second press during
+        # the multi-second reset doesn't get interpreted as a double-
+        # Ctrl+C exit. We restore the default handler after reset and
+        # only then arm the double-press timer, so the "twice" window
+        # is measured between presses the user can actually see take
+        # effect (post-reset), not across the blind homing window.
+        prev_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            time_step = env.reset()
+        finally:
+            signal.signal(signal.SIGINT, prev_handler)
+        _last_interrupt = time.time()
         if use_cqn and args.temporal_ensemble:
             temporal_ensemble.reset()
         if use_cqn:
