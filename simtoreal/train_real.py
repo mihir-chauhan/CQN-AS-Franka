@@ -50,7 +50,6 @@ import argparse
 import json
 import logging
 import os
-import signal
 import sys
 import time
 from pathlib import Path
@@ -865,13 +864,53 @@ def main():
     # ------------------------------------------------------------------
     print("=" * 60)
     print(f"Starting {args.agent.upper()} training for {args.num_train_steps} steps...")
-    print("  Ctrl+C once  → abort current episode & reset")
-    print("  Ctrl+C twice → save snapshot & exit")
+    print("  Ctrl+X       → abort current episode & reset")
+    print("  Ctrl+C       → save snapshot & exit")
+
+    # Put stdin in cbreak + non-blocking mode so we can poll for Ctrl+X
+    # (0x18) each step without blocking the control loop. Same pattern
+    # used by simtoreal.real_env.record_teleop_demo.
+    import fcntl
+    import termios
+    import tty
+    import select as _select
+    _stdin_fd = sys.stdin.fileno()
+    _stdin_is_tty = os.isatty(_stdin_fd)
+    if _stdin_is_tty:
+        _saved_term = termios.tcgetattr(_stdin_fd)
+        _saved_flags = fcntl.fcntl(_stdin_fd, fcntl.F_GETFL)
+        tty.setcbreak(_stdin_fd)
+        fcntl.fcntl(_stdin_fd, fcntl.F_SETFL, _saved_flags | os.O_NONBLOCK)
+    else:
+        _saved_term = None
+        _saved_flags = None
+
+    def _restore_stdin():
+        if _stdin_is_tty and _saved_term is not None:
+            termios.tcsetattr(_stdin_fd, termios.TCSADRAIN, _saved_term)
+            fcntl.fcntl(_stdin_fd, fcntl.F_SETFL, _saved_flags)
+
+    def _ctrl_x_pressed() -> bool:
+        if not _stdin_is_tty:
+            return False
+        pressed = False
+        while True:
+            r, _, _ = _select.select([_stdin_fd], [], [], 0)
+            if not r:
+                break
+            try:
+                ch = os.read(_stdin_fd, 1)
+            except BlockingIOError:
+                break
+            if not ch:
+                break
+            if ch == b"\x18":
+                pressed = True
+        return pressed
 
     dt = 1.0 / args.control_hz
     episode_step = 0
     episode_reward = 0.0
-    _last_interrupt = 0.0  # timestamp of last Ctrl+C
 
     time_step = env.reset()
     if use_cqn and args.temporal_ensemble:
@@ -885,8 +924,28 @@ def main():
 
     timer = utils.Timer()
 
+    def _abort_and_reset():
+        nonlocal time_step, episode_step, episode_reward
+        print(f"\n  [ABORT] Ctrl+X — aborting episode {global_episode + 1} "
+              f"(step {episode_step}). Resetting...")
+        time_step = env.reset()
+        if use_cqn and args.temporal_ensemble:
+            temporal_ensemble.reset()
+        if use_cqn:
+            replay_storage.add(time_step)
+            demo_replay_storage.add(time_step)
+        else:
+            replay_buffer.add(time_step)
+            demo_replay_buffer.add(time_step)
+        episode_step = 0
+        episode_reward = 0.0
+
     while global_step < args.num_train_steps:
       try:
+        if _ctrl_x_pressed():
+            _abort_and_reset()
+            continue
+
         # Episode boundary
         if time_step.last():
             global_episode += 1
@@ -1019,44 +1078,18 @@ def main():
             time.sleep(dt - elapsed)
 
       except KeyboardInterrupt:
-        now = time.time()
-        if now - _last_interrupt < 2.0:
-            # Double Ctrl+C → save and exit
-            print("\n\n  [ABORT] Double Ctrl+C — saving and exiting...")
-            save_snapshot(save_dir, agent, global_step, global_episode,
-                          agent_type=args.agent)
-            env.close()
-            return
-        print(f"\n  [ABORT] Ctrl+C — aborting episode {global_episode + 1} "
-              f"(step {episode_step}). Resetting...")
-        # Ignore SIGINT while the robot homes so a second press during
-        # the multi-second reset doesn't get interpreted as a double-
-        # Ctrl+C exit. We restore the default handler after reset and
-        # only then arm the double-press timer, so the "twice" window
-        # is measured between presses the user can actually see take
-        # effect (post-reset), not across the blind homing window.
-        prev_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-        try:
-            time_step = env.reset()
-        finally:
-            signal.signal(signal.SIGINT, prev_handler)
-        _last_interrupt = time.time()
-        if use_cqn and args.temporal_ensemble:
-            temporal_ensemble.reset()
-        if use_cqn:
-            replay_storage.add(time_step)
-            demo_replay_storage.add(time_step)
-        else:
-            replay_buffer.add(time_step)
-            demo_replay_buffer.add(time_step)
-        episode_step = 0
-        episode_reward = 0.0
-        continue
+        print("\n\n  [EXIT] Ctrl+C — saving and exiting...")
+        save_snapshot(save_dir, agent, global_step, global_episode,
+                      agent_type=args.agent)
+        _restore_stdin()
+        env.close()
+        return
 
     # Final save
     save_snapshot(save_dir, agent, global_step, global_episode,
                   agent_type=args.agent)
     print(f"\nTraining complete. {global_step} steps, {global_episode} episodes.")
+    _restore_stdin()
     env.close()
 
 
