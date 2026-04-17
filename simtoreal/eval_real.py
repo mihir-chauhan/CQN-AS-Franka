@@ -419,7 +419,6 @@ def main():
 
     for ep in range(args.num_episodes):
         print(f"\n--- Episode {ep + 1}/{args.num_episodes} ---")
-        input("Press ENTER to start episode (position objects as needed)...")
 
         time_step = env.reset()
         episode_step = 0
@@ -496,8 +495,7 @@ def main():
                 args.success_pos_thresh, args.success_quat_thresh,
             )
         else:
-            success_input = input("  Was the task successful? [y/N]: ").strip().lower()
-            success = success_input in ("y", "yes", "1")
+            success = False  # no goal pose → cannot auto-detect
         results.append({
             "episode": ep + 1,
             "steps": episode_step,
