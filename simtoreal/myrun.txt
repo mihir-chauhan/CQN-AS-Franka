@@ -329,6 +329,33 @@ python train_real.py \
     --save-dir ../runs/pick_drop
 
 
+# ──────────────────────────────────────────────────────────────────
+# IMPORTANT — safer-config notes for the pick-drop runs below
+# ──────────────────────────────────────────────────────────────────
+# Symptoms observed on a 1-demo run: gripper closes then immediately
+# opens; second episode grabs object and trips a reflex abort with
+# joint_velocity_violation. Root causes:
+#
+#  (1) Demos recorded at 10 Hz (demo-hz default) but control loop ran
+#      at 15 Hz (control-hz default). The delta-joint actions in the
+#      demo were sized for a 10 Hz step; replayed at 15 Hz they are
+#      1.5x too fast.  →  match rates: --control-hz 10
+#
+#  (2) --joint-delta-clip default 0.25 rad/step × 15 Hz = 3.75 rad/s,
+#      which exceeds Franka joint velocity limits (~2.17 rad/s on
+#      joints 1-4). Drop to 0.05  →  0.5 rad/s at 10 Hz. Safe.
+#
+#  (3) ARSQ.act samples stochastically during training; with only 1
+#      demo the critic has almost no signal, so the gripper dim
+#      (threshold >0.5) flips on sampling variance.  →  record 3-5
+#      waypoint demos (still PoC-scale) and heavily weight BC via
+#      --demo-batch-size 256 --batch-size 32.
+#
+# Also: --velocity-factor 0.15 keeps the *commanded* dynamics slow
+# so the reflex has more margin before firing.
+# ──────────────────────────────────────────────────────────────────
+
+
 # ── RUN A: ARSQ-base (no physics) on pick-drop ──
 python train_real.py \
     --agent arsq \
@@ -341,10 +368,13 @@ python train_real.py \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --control-hz 10 \
+    --joint-delta-clip 0.05 \
+    --velocity-factor 0.15 \
     --num-train-steps 10000 \
     --episode-length 200 \
     --batch-size 32 \
-    --demo-batch-size 32 \
+    --demo-batch-size 256 \
     --eval-every 2000 \
     --save-every 500 \
     --save-dir ../runs/pick_drop_arsq_base \
@@ -367,10 +397,13 @@ python train_real.py \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --control-hz 10 \
+    --joint-delta-clip 0.05 \
+    --velocity-factor 0.15 \
     --num-train-steps 10000 \
     --episode-length 200 \
     --batch-size 32 \
-    --demo-batch-size 32 \
+    --demo-batch-size 256 \
     --eval-every 2000 \
     --save-every 500 \
     --save-dir ../runs/pick_drop_arsq_phys \
@@ -389,6 +422,9 @@ python eval_real.py \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --control-hz 10 \
+    --joint-delta-clip 0.05 \
+    --velocity-factor 0.15 \
     --num-episodes 10 \
     --results-dir ../runs/pick_drop_arsq_base \
     2>&1 | tee ../runs/pick_drop_arsq_base/eval.log
@@ -404,6 +440,9 @@ python eval_real.py \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --control-hz 10 \
+    --joint-delta-clip 0.05 \
+    --velocity-factor 0.15 \
     --num-episodes 10 \
     --results-dir ../runs/pick_drop_arsq_phys \
     2>&1 | tee ../runs/pick_drop_arsq_phys/eval.log
