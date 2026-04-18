@@ -188,7 +188,21 @@ class RealFrankaEnv:
     frame_stack : int
         Number of frames to stack for obs.
     home_q : list
-        Joint configuration for the home / reset pose.
+        Joint configuration for the final / home reset pose. Used only if
+        ``home_sequence`` is not provided (kept for backward compatibility).
+    home_sequence : list[list[float]] or None
+        Ordered list of joint configurations executed one after another
+        during reset. If None, defaults to
+        ``[DEFAULT_PARTIAL_HOME_Q, home_q or DEFAULT_HOME_Q]`` (skipping
+        the partial-home waypoint if its .npy is missing).
+    gripper_at_reset : str
+        "open" (default) or "closed" — final gripper state at the end of
+        reset, after any human-in-the-loop pause.
+    pause_for_human : bool
+        If True, after running the home sequence, block on ``input()`` so
+        an operator can place an object in the gripper / reset the scene
+        before the episode starts. The final gripper state is set *after*
+        the pause.
     joint_delta_clip : float
         Safety clamp on per-step joint delta (rad).
     velocity_factor : float
@@ -220,6 +234,9 @@ class RealFrankaEnv:
         action_stats_path: str | None = None,
         gripper_speed: float = 0.1,
         gripper_force: float = 20.0,
+        home_sequence: list | None = None,
+        gripper_at_reset: str = "open",
+        pause_for_human: bool = False,
     ):
         self._episode_length = episode_length
         self._frame_stack = frame_stack
@@ -228,6 +245,24 @@ class RealFrankaEnv:
         self._gripper_speed = gripper_speed
         self._gripper_force = gripper_force
         self._home_q = home_q or DEFAULT_HOME_Q
+
+        if home_sequence is None:
+            seq = []
+            if DEFAULT_PARTIAL_HOME_Q is not None:
+                seq.append(list(DEFAULT_PARTIAL_HOME_Q))
+            seq.append(list(self._home_q))
+            self._home_sequence = seq
+        else:
+            self._home_sequence = [list(q) for q in home_sequence]
+            if not self._home_sequence:
+                raise ValueError("home_sequence must be non-empty")
+
+        if gripper_at_reset not in ("open", "closed"):
+            raise ValueError(
+                f"gripper_at_reset must be 'open' or 'closed', got {gripper_at_reset!r}"
+            )
+        self._gripper_at_reset = gripper_at_reset
+        self._pause_for_human = bool(pause_for_human)
 
         # Camera layout — must match training config
         assert len(camera_rig.camera_keys) == NUM_CAMERAS, (
@@ -304,7 +339,15 @@ class RealFrankaEnv:
     # ------------------------------------------------------------------
 
     def reset(self) -> TimeStep:
-        """Move to home, open gripper, return initial observation."""
+        """Move through the configured home sequence and return obs.
+
+        Flow:
+          1. Open gripper (always, so we never drag an object home).
+          2. Walk through ``self._home_sequence`` in order.
+          3. If ``pause_for_human`` is set, block on input() so the
+             operator can load an object / reset the scene.
+          4. Set final gripper state per ``gripper_at_reset``.
+        """
         # Clear frame stacks
         self._low_dim_obses.clear()
         for frames in self._frames.values():
@@ -317,47 +360,47 @@ class RealFrankaEnv:
             self._gripper_is_open = True
             time.sleep(0.3)
 
-        # ---------- Two-stage homing: partial home → full home ----------
         time.sleep(0.5)  # let robot settle
 
-        # Stage 1: move to partial home (safe intermediate position)
-        if DEFAULT_PARTIAL_HOME_Q is not None:
+        # ---------- Run the configured home sequence ----------
+        last_idx = len(self._home_sequence) - 1
+        for i, q in enumerate(self._home_sequence):
             try:
-                motion_ph = JointWaypointMotion(
-                    [JointWaypoint(DEFAULT_PARTIAL_HOME_Q)],
-                    HOME_VEL,
-                )
-                self._robot.move(motion_ph)
-                # Wait until robot physically reaches partial home
-                self._wait_for_home(DEFAULT_PARTIAL_HOME_Q)
+                motion = JointWaypointMotion([JointWaypoint(q)], HOME_VEL)
+                self._robot.move(motion)
+                self._wait_for_home(q)
             except Exception as e:
-                print(f"[RealFrankaEnv] Partial-home move failed: {e}")
+                print(f"[RealFrankaEnv] Home step {i} failed: {e}")
+                print("[RealFrankaEnv] Recovering and retrying...")
                 self._robot.recover_from_errors()
                 time.sleep(1.0)
+                # On final step, retry once; on intermediate steps skip.
+                if i == last_idx:
+                    motion = JointWaypointMotion([JointWaypoint(q)], HOME_VEL)
+                    self._robot.move(motion)
+                    self._wait_for_home(q)
 
-        # Stage 2: move to full home
-        motion = JointWaypointMotion(
-            [JointWaypoint(self._home_q)],
-            HOME_VEL,
-        )
-        try:
-            self._robot.move(motion)
-            self._wait_for_home(self._home_q)
-        except Exception as e:
-            print(f"[RealFrankaEnv] Homing failed: {e}")
-            print("[RealFrankaEnv] Recovering and retrying...")
-            self._robot.recover_from_errors()
-            time.sleep(1.0)
-            motion = JointWaypointMotion(
-                [JointWaypoint(self._home_q)],
-                HOME_VEL,
+        # ---------- Optional human-in-the-loop pause ----------
+        if self._pause_for_human:
+            try:
+                input(
+                    "\n  >>> [pick-place] Place object in gripper and press "
+                    "Enter to start the episode... "
+                )
+            except EOFError:
+                # Non-interactive stdin — proceed without pause.
+                print("[RealFrankaEnv] pause_for_human: stdin closed, continuing.")
+
+        # ---------- Set final gripper state ----------
+        if self._gripper_at_reset == "closed":
+            self._gripper.grasp(
+                0.0, self._gripper_speed, self._gripper_force,
+                epsilon_inner=1.0, epsilon_outer=1.0,
             )
-            self._robot.move(motion)
-            self._wait_for_home(self._home_q)
-
-        # Ensure gripper is open after homing
-        self._gripper.open(self._gripper_speed)
-        self._gripper_is_open = True
+            self._gripper_is_open = False
+        else:
+            self._gripper.open(self._gripper_speed)
+            self._gripper_is_open = True
         time.sleep(0.5)  # settle
 
         self._step_counter = 0
@@ -1153,6 +1196,9 @@ def make(
     action_stats_path: str | None = None,
     gripper_speed: float = 0.1,
     gripper_force: float = 20.0,
+    home_sequence: list | None = None,
+    gripper_at_reset: str = "open",
+    pause_for_human: bool = False,
 ) -> ExtendedTimeStepWrapper:
     env = RealFrankaEnv(
         robot_ip=robot_ip,
@@ -1167,5 +1213,8 @@ def make(
         action_stats_path=action_stats_path,
         gripper_speed=gripper_speed,
         gripper_force=gripper_force,
+        home_sequence=home_sequence,
+        gripper_at_reset=gripper_at_reset,
+        pause_for_human=pause_for_human,
     )
     return ExtendedTimeStepWrapper(env)

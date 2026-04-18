@@ -271,3 +271,144 @@ python compare_evals.py \
               ../runs/compare_arsq_phys/eval_results.json \
     --labels "CQN-AS" "ARSQ-base" "ARSQ+Physics" \
     --save eval_comparison.png
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PICK-AND-DROP TASK — ARSQ (base + physics)
+# Scenario: robot starts at the grasp-ready pose with the object
+# already in the gripper. It learns to lift, move, and drop.
+#
+# Key flags (new):
+#   --task-mode pick-place   → after homing, pauses for you to load
+#                              the object, then closes the gripper
+#                              before the episode begins.
+#   --home-sequence A.npy B.npy ...
+#                            → ordered joint waypoints for the reset.
+#                              Paths relative to simtoreal/.
+#                              Default: partialhome.npy image_45.npy
+#   --gripper-start open|closed
+#                            → explicit override (auto-set by task-mode).
+#
+# Controls while training:
+#   Ctrl+X  → abort current episode and re-reset
+#   Ctrl+C  → save snapshot and exit
+# ═══════════════════════════════════════════════════════════════════
+
+# Optional: record a custom grasp-ready pose (e.g. "pick_ready.npy")
+# by moving the robot to it and snapshotting the joints — reuse any
+# existing helper you have, or hand-write the .npy file.
+
+
+# ── Step 1 (pick-drop): record freedrive waypoints ──
+# Start with the robot at the grasp-ready pose, place the object in
+# the gripper by hand, press G in the script to close the gripper,
+# then freedrive through the lift + drop motion.
+cd simtoreal
+python record_waypoints.py \
+    --robot-ip 192.168.131.41 \
+    --num-demos 10 \
+    --hz 10 \
+    --save-dir ../runs/pick_drop/waypoints
+
+
+# ── Step 2 (pick-drop): replay waypoints to capture camera demos ──
+# The env will home → pause for you to load the object → close the
+# gripper → replay. Repeat for each waypoint file.
+python train_real.py \
+    --agent arsq \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --demo-mode waypoint \
+    --waypoint-dir ../runs/pick_drop/waypoints \
+    --demo-dir ../runs/pick_drop/demos \
+    --task-mode pick-place \
+    --home-sequence partialhome.npy pick_ready.npy \
+    --save-dir ../runs/pick_drop
+
+
+# ── RUN A: ARSQ-base (no physics) on pick-drop ──
+python train_real.py \
+    --agent arsq \
+    --no-fk-reg \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/pick_drop/demos \
+    --goal-pose goal_pose.json \
+    --task-mode pick-place \
+    --home-sequence partialhome.npy pick_ready.npy \
+    --num-train-steps 10000 \
+    --episode-length 200 \
+    --batch-size 32 \
+    --demo-batch-size 32 \
+    --eval-every 2000 \
+    --save-every 500 \
+    --save-dir ../runs/pick_drop_arsq_base \
+    2>&1 | tee ../runs/pick_drop_arsq_base/train.log
+
+
+# ── RUN B: ARSQ + Physics (FK Walk-on-Spheres) on pick-drop ──
+python train_real.py \
+    --agent arsq \
+    --use-fk-reg \
+    --fk-weight 1.0 \
+    --kappa 0.1 \
+    --nu 0.01 \
+    --num-walks 10 \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --demo-dir ../runs/pick_drop/demos \
+    --goal-pose goal_pose.json \
+    --task-mode pick-place \
+    --home-sequence partialhome.npy pick_ready.npy \
+    --num-train-steps 10000 \
+    --episode-length 200 \
+    --batch-size 32 \
+    --demo-batch-size 32 \
+    --eval-every 2000 \
+    --save-every 500 \
+    --save-dir ../runs/pick_drop_arsq_phys \
+    2>&1 | tee ../runs/pick_drop_arsq_phys/train.log
+
+
+# ── EVAL (pick-drop): run 10 eval episodes per model ──
+# Note: eval_real.py does NOT yet support --task-mode / --home-sequence.
+# If eval needs the pick-place pause/home, update eval_real.py to
+# plumb the same flags into its make() call (ask Claude for this).
+python eval_real.py \
+    --agent arsq \
+    --no-fk-reg \
+    --snapshot ../runs/pick_drop_arsq_base/snapshot.pt \
+    --action-stats ../runs/pick_drop_arsq_base/action_stats.npz \
+    --goal-pose goal_pose.json \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-episodes 10 \
+    --results-dir ../runs/pick_drop_arsq_base \
+    2>&1 | tee ../runs/pick_drop_arsq_base/eval.log
+
+python eval_real.py \
+    --agent arsq \
+    --use-fk-reg \
+    --snapshot ../runs/pick_drop_arsq_phys/snapshot.pt \
+    --action-stats ../runs/pick_drop_arsq_phys/action_stats.npz \
+    --goal-pose goal_pose.json \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --num-episodes 10 \
+    --results-dir ../runs/pick_drop_arsq_phys \
+    2>&1 | tee ../runs/pick_drop_arsq_phys/eval.log
+
+
+# ── Compare ARSQ-base vs ARSQ+Physics on pick-drop ──
+python compare_evals.py \
+    --results ../runs/pick_drop_arsq_base/eval_results.json \
+              ../runs/pick_drop_arsq_phys/eval_results.json \
+    --labels "ARSQ-base" "ARSQ+Physics" \
+    --save pick_drop_eval_comparison.png
