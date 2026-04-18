@@ -372,13 +372,27 @@ class RealFrankaEnv:
             except Exception as e:
                 print(f"[RealFrankaEnv] Home step {i} failed: {e}")
                 print("[RealFrankaEnv] Recovering and retrying...")
-                self._robot.recover_from_errors()
+                try:
+                    self._robot.recover_from_errors()
+                except Exception as rec_e:
+                    print(f"[RealFrankaEnv] recover_from_errors failed: {rec_e}")
                 time.sleep(1.0)
                 # On final step, retry once; on intermediate steps skip.
+                # Swallow any retry failure — reflex aborts typically fire
+                # after the robot is already near the target, so continuing
+                # is safer than crashing training mid-episode.
                 if i == last_idx:
-                    motion = JointWaypointMotion([JointWaypoint(q)], HOME_VEL)
-                    self._robot.move(motion)
-                    self._wait_for_home(q)
+                    try:
+                        motion = JointWaypointMotion([JointWaypoint(q)], HOME_VEL)
+                        self._robot.move(motion)
+                        self._wait_for_home(q)
+                    except Exception as e2:
+                        print(f"[RealFrankaEnv] Home step {i} retry also failed "
+                              f"(continuing anyway): {e2}")
+                        try:
+                            self._robot.recover_from_errors()
+                        except Exception:
+                            pass
 
         # ---------- Optional human-in-the-loop pause ----------
         if self._pause_for_human:
