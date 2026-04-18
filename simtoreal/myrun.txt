@@ -301,7 +301,7 @@ python compare_evals.py \
 
 # ── Step 1 (pick-drop): record freedrive waypoints ──
 # Start with the robot at the grasp-ready pose, place the object in
-# the gripper by ghp_PqVXRW9RLUMKZIKlGqOFBRccXoNAvF6cVrhand, press G in the script to close the gripper,
+# the gripper by hand, press G in the script to close the gripper,
 # then freedrive through the lift + drop motion.
 cd simtoreal
 python record_waypoints.py \
