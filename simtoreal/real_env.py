@@ -99,8 +99,8 @@ class ExtendedTimeStepWrapper:
     def __init__(self, env):
         self._env = env
 
-    def reset(self):
-        time_step = self._env.reset()
+    def reset(self, *args, **kwargs):
+        time_step = self._env.reset(*args, **kwargs)
         return self._augment_time_step(time_step)
 
     def step(self, action):
