@@ -294,9 +294,11 @@ python compare_evals.py \
 #   Ctrl+C  → save snapshot and exit
 # ═══════════════════════════════════════════════════════════════════
 
-# Optional: record a custom grasp-ready pose (e.g. "pick_ready.npy")
-# by moving the robot to it and snapshotting the joints — reuse any
-# existing helper you have, or hand-write the .npy file.
+# Required pose files (place in simtoreal/):
+#   partialhomepickplace.npy  — first waypoint on reset
+#   partialhome.npy            — intermediate waypoint (already exists)
+#   pickuppose.npy             — final grasp-ready pose
+# Snapshot each by moving the robot there and saving its joints to .npy.
 
 
 # ── Step 1 (pick-drop): record freedrive waypoints ──
@@ -323,7 +325,7 @@ python train_real.py \
     --waypoint-dir ../runs/pick_drop/waypoints \
     --demo-dir ../runs/pick_drop/demos \
     --task-mode pick-place \
-    --home-sequence partialhome.npy pick_ready.npy \
+    --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
     --save-dir ../runs/pick_drop
 
 
@@ -338,7 +340,7 @@ python train_real.py \
     --demo-dir ../runs/pick_drop/demos \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
-    --home-sequence partialhome.npy pick_ready.npy \
+    --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
     --num-train-steps 10000 \
     --episode-length 200 \
     --batch-size 32 \
@@ -364,7 +366,7 @@ python train_real.py \
     --demo-dir ../runs/pick_drop/demos \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
-    --home-sequence partialhome.npy pick_ready.npy \
+    --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
     --num-train-steps 10000 \
     --episode-length 200 \
     --batch-size 32 \
@@ -376,9 +378,6 @@ python train_real.py \
 
 
 # ── EVAL (pick-drop): run 10 eval episodes per model ──
-# Note: eval_real.py does NOT yet support --task-mode / --home-sequence.
-# If eval needs the pick-place pause/home, update eval_real.py to
-# plumb the same flags into its make() call (ask Claude for this).
 python eval_real.py \
     --agent arsq \
     --no-fk-reg \
@@ -388,6 +387,8 @@ python eval_real.py \
     --robot-ip 192.168.131.41 \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --task-mode pick-place \
+    --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
     --num-episodes 10 \
     --results-dir ../runs/pick_drop_arsq_base \
     2>&1 | tee ../runs/pick_drop_arsq_base/eval.log
@@ -401,6 +402,8 @@ python eval_real.py \
     --robot-ip 192.168.131.41 \
     --camera-mode orbbec \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --task-mode pick-place \
+    --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
     --num-episodes 10 \
     --results-dir ../runs/pick_drop_arsq_phys \
     2>&1 | tee ../runs/pick_drop_arsq_phys/eval.log

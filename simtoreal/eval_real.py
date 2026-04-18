@@ -121,6 +121,19 @@ def parse_args():
     p.add_argument("--robot-ip", type=str, default="192.168.131.41")
     p.add_argument("--home-q", type=str, default=None,
                    help="JSON list of 7 joint angles for home pose")
+    p.add_argument("--home-sequence", type=str, nargs="+", default=None,
+                   help="Ordered list of .npy files (7-dof joint configs) "
+                        "executed during reset. Paths resolved relative to "
+                        "the simtoreal/ directory if not absolute. "
+                        "Default: partialhome.npy image_45.npy")
+    p.add_argument("--task-mode", choices=["reach-grasp", "pick-place"],
+                   default="reach-grasp",
+                   help="'pick-place' pauses after homing for the operator "
+                        "to load the object, then closes the gripper before "
+                        "the episode starts.")
+    p.add_argument("--gripper-start", choices=["open", "closed"], default=None,
+                   help="Explicit gripper state at end of reset. Defaults: "
+                        "'open' for reach-grasp, 'closed' for pick-place.")
     p.add_argument("--joint-delta-clip", type=float, default=0.05)
     p.add_argument("--velocity-factor", type=float, default=0.15)
     p.add_argument("--gripper-speed", type=float, default=0.1)
@@ -365,6 +378,32 @@ def main():
     camera_rig = build_camera_rig(args)
     home_q = json.loads(args.home_q) if args.home_q else None
 
+    # Resolve home sequence (.npy files → list of joint configs).
+    home_sequence = None
+    if args.home_sequence:
+        from pathlib import Path as _P
+        import numpy as _np
+        simtoreal_dir = _P(__file__).resolve().parent
+        home_sequence = []
+        for p in args.home_sequence:
+            path = _P(p)
+            if not path.is_absolute():
+                path = simtoreal_dir / path
+            if not path.exists():
+                raise FileNotFoundError(f"home-sequence file not found: {path}")
+            home_sequence.append(_np.load(str(path)).tolist())
+        print(f"[home-sequence] {len(home_sequence)} waypoints from: "
+              f"{args.home_sequence}")
+
+    if args.task_mode == "pick-place":
+        gripper_at_reset = args.gripper_start or "closed"
+        pause_for_human = True
+    else:
+        gripper_at_reset = args.gripper_start or "open"
+        pause_for_human = False
+    print(f"[task-mode] {args.task_mode} "
+          f"(gripper_at_reset={gripper_at_reset}, pause_for_human={pause_for_human})")
+
     if args.dry_run:
         print("[DRY RUN] Using dummy robot connection")
         # In dry-run, we still create the env with dummy cameras
@@ -382,6 +421,9 @@ def main():
         action_stats_path=args.action_stats,
         gripper_speed=args.gripper_speed,
         gripper_force=args.gripper_force,
+        home_sequence=home_sequence,
+        gripper_at_reset=gripper_at_reset,
+        pause_for_human=pause_for_human,
     )
 
     agent = make_agent_from_snapshot(env, args)
