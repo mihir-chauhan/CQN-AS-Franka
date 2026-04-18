@@ -338,7 +338,7 @@ class RealFrankaEnv:
     # Core env methods
     # ------------------------------------------------------------------
 
-    def reset(self) -> TimeStep:
+    def reset(self, skip_home: bool = False) -> TimeStep:
         """Move through the configured home sequence and return obs.
 
         Flow:
@@ -347,24 +347,32 @@ class RealFrankaEnv:
           3. If ``pause_for_human`` is set, block on input() so the
              operator can load an object / reset the scene.
           4. Set final gripper state per ``gripper_at_reset``.
+
+        If ``skip_home`` is True, steps 1 and 2 are skipped — use for
+        the initial reset when the robot is already in the desired
+        starting pose. The pause and final-gripper-state steps still run.
         """
         # Clear frame stacks
         self._low_dim_obses.clear()
         for frames in self._frames.values():
             frames.clear()
 
-        # Open gripper BEFORE homing so the robot doesn't drag an object
-        self._robot.recover_from_errors()
-        if not self._gripper_is_open:
-            self._gripper.open(self._gripper_speed)
-            self._gripper_is_open = True
-            time.sleep(0.3)
+        if skip_home:
+            print("[RealFrankaEnv] skip_home=True — skipping home sequence.")
 
-        time.sleep(0.5)  # let robot settle
+        # Open gripper BEFORE homing so the robot doesn't drag an object
+        if not skip_home:
+            self._robot.recover_from_errors()
+            if not self._gripper_is_open:
+                self._gripper.open(self._gripper_speed)
+                self._gripper_is_open = True
+                time.sleep(0.3)
+            time.sleep(0.5)  # let robot settle
 
         # ---------- Run the configured home sequence ----------
         last_idx = len(self._home_sequence) - 1
-        for i, q in enumerate(self._home_sequence):
+        _home_iter = enumerate(self._home_sequence) if not skip_home else iter(())
+        for i, q in _home_iter:
             try:
                 motion = JointWaypointMotion([JointWaypoint(q)], HOME_VEL)
                 self._robot.move(motion)

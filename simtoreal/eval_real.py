@@ -134,6 +134,10 @@ def parse_args():
     p.add_argument("--gripper-start", choices=["open", "closed"], default=None,
                    help="Explicit gripper state at end of reset. Defaults: "
                         "'open' for reach-grasp, 'closed' for pick-place.")
+    p.add_argument("--skip-initial-home", action="store_true",
+                   help="Skip the home sequence on the very first reset "
+                        "(robot is assumed already at the starting pose). "
+                        "Subsequent episode resets still home.")
     p.add_argument("--joint-delta-clip", type=float, default=0.05)
     p.add_argument("--velocity-factor", type=float, default=0.15)
     p.add_argument("--gripper-speed", type=float, default=0.1)
@@ -462,7 +466,7 @@ def main():
     for ep in range(args.num_episodes):
         print(f"\n--- Episode {ep + 1}/{args.num_episodes} ---")
 
-        time_step = env.reset()
+        time_step = env.reset(skip_home=(args.skip_initial_home and ep == 0))
         episode_step = 0
         episode_reward = 0.0
         video_frames = []

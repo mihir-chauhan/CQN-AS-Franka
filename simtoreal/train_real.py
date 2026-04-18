@@ -176,6 +176,10 @@ def parse_args():
     p.add_argument("--gripper-start", choices=["open", "closed"], default=None,
                    help="Explicit gripper state at end of reset. Defaults: "
                         "'open' for reach-grasp, 'closed' for pick-place.")
+    p.add_argument("--skip-initial-home", action="store_true",
+                   help="Skip the home sequence on the very first reset of "
+                        "this run (robot is assumed to already be in the "
+                        "starting pose). Subsequent resets still home.")
     p.add_argument("--joint-delta-clip", type=float, default=0.25)
     p.add_argument("--velocity-factor", type=float, default=0.4)
 
@@ -938,12 +942,12 @@ def main():
             tty.setcbreak(_stdin_fd)
             fcntl.fcntl(_stdin_fd, fcntl.F_SETFL, _saved_flags | os.O_NONBLOCK)
 
-    def _safe_reset():
+    def _safe_reset(skip_home: bool = False):
         """Reset env with stdin in cooked mode so input() inside the env
         (pause_for_human) works; re-enable Ctrl+X polling afterwards."""
         _restore_stdin()
         try:
-            return env.reset()
+            return env.reset(skip_home=skip_home)
         finally:
             _enable_cbreak_stdin()
 
@@ -969,7 +973,7 @@ def main():
     episode_step = 0
     episode_reward = 0.0
 
-    time_step = _safe_reset()
+    time_step = _safe_reset(skip_home=args.skip_initial_home)
     if use_cqn and args.temporal_ensemble:
         temporal_ensemble.reset()
     if use_cqn:
