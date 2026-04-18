@@ -49,7 +49,6 @@ def move_down_to_grasp(
         robot.recover_from_errors()
         robot.move(m_up_1cm)
 
-
 def downwards_ee_orn(angle: float):
     wrapped_angle = (angle + np.pi / 2) % np.pi - np.pi / 2
     return R.from_euler("xyz", [np.pi, 0, wrapped_angle - np.pi / 4])
