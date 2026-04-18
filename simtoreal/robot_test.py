@@ -13,7 +13,7 @@ HOME_Q = [
     np.pi / 2,
     np.pi / 4,
 ]  # home turned towards table
-IMAGE_Q = np.load("positions/current_q.npy")
+IMAGE_Q = np.load("pickuppose.npy")
 CAM_OFFT = np.array([0.065, 0.035, 0.044])
 SPEED = 0.01
 FORCE = 20
@@ -22,20 +22,20 @@ HALF_VEL = RelativeDynamicsFactor(0.5, 1, 1)
 
 
 def home_robot(robot, gripper, open_gripper: bool = True):
-    state = robot.current_joint_positions # update state
-    current_q = np.array(state)
-    np.save("positions/partialhome.npy", current_q)
-    print("current_q:", current_q)
-    return
-    robot.move(JointMotion(IMAGE_Q))
-    gripper.grasp(
-        0.0, SPEED, FORCE, epsilon_inner=1.0, epsilon_outer=1.0
-    )  # 0.005 is default for both
+    # state = robot.current_joint_positions # update state
+    # current_q = np.array(state)
+    # np.save("partialhomepickplace.npy", current_q)
+    # print("current_q:", current_q)
+    # return
+    # robot.move(JointMotion(IMAGE_Q))
+    # gripper.grasp(
+    #     0.0, SPEED, FORCE, epsilon_inner=1.0, epsilon_outer=1.0
+    # )  # 0.005 is default for both
 
 
 
-    # if open_gripper:
-    gripper.open(SPEED)
+    # # if open_gripper:
+    # gripper.open(SPEED)
     robot.move(
         JointWaypointMotion(
             [JointWaypoint(robot.current_joint_state.position), JointWaypoint(IMAGE_Q)],
@@ -133,3 +133,4 @@ if __name__ == "__main__":
 # +y = right
 # +z = up
 # last joint + moves clockwise
+#
