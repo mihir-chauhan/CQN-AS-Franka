@@ -411,6 +411,58 @@ python train_real.py \
     --save-dir ../runs/pick_drop_arsq_phys \
     2>&1 | tee ../runs/pick_drop_arsq_phys/train.log
 
+# ══════════════════════════════════════════════════════════════════
+# OFFLINE variants — no robot rollouts, no periodic eval.
+# Use when you just want to train on the captured demos and then
+# evaluate separately with eval_real.py. Much faster, no reflex
+# aborts during training, no need to stand at the robot.
+#
+# Requires: --load-demos-only --offline (and valid --demo-dir).
+# Robot still needs to be connected at startup (for action spec),
+# but is never commanded to move during training.
+# ══════════════════════════════════════════════════════════════════
+
+# ── RUN A (offline): ARSQ-base ──
+python train_real.py \
+    --agent arsq \
+    --no-fk-reg \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --offline \
+    --demo-dir ../runs/pick_drop/demos \
+    --num-train-steps 10000 \
+    --batch-size 32 \
+    --demo-batch-size 256 \
+    --save-every 1000 \
+    --save-dir ../runs/pick_drop_arsq_base_offline \
+    2>&1 | tee ../runs/pick_drop_arsq_base_offline/train.log
+
+# ── RUN B (offline): ARSQ + Physics ──
+python train_real.py \
+    --agent arsq \
+    --use-fk-reg \
+    --fk-weight 1.0 \
+    --kappa 0.1 \
+    --nu 0.01 \
+    --num-walks 10 \
+    --robot-ip 192.168.131.41 \
+    --camera-mode orbbec \
+    --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
+    --load-demos-only \
+    --offline \
+    --demo-dir ../runs/pick_drop/demos \
+    --num-train-steps 10000 \
+    --batch-size 32 \
+    --demo-batch-size 256 \
+    --save-every 1000 \
+    --save-dir ../runs/pick_drop_arsq_phys_offline \
+    2>&1 | tee ../runs/pick_drop_arsq_phys_offline/train.log
+
+# Then evaluate both on the real robot (unchanged eval commands,
+# just point --snapshot at the offline-trained model).
+
 
 # ── EVAL (pick-drop): run 10 eval episodes per model ──
 python eval_real.py \

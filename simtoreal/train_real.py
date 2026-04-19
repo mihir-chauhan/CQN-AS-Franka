@@ -297,6 +297,14 @@ def parse_args():
     p.add_argument("--human-reward", action="store_true", default=False,
                    help="Fallback: prompt human for success/fail (y/n).")
 
+    # Offline training
+    p.add_argument("--offline", action="store_true",
+                   help="Pure offline training: load demos, run N update "
+                        "steps from the demo buffer only, no env rollouts, "
+                        "no periodic eval. Robot is connected at startup "
+                        "(needed for action spec) but never commanded to "
+                        "move. Run eval_real.py separately to evaluate.")
+
     return p.parse_args()
 
 
@@ -916,6 +924,52 @@ def main():
     # 5. Training loop
     # ------------------------------------------------------------------
     print("=" * 60)
+
+    # ---------- Offline branch (pure updates from demo buffer) ----------
+    if args.offline:
+        print(f"Starting {args.agent.upper()} OFFLINE training for "
+              f"{args.num_train_steps} update steps (no env rollouts).")
+        print("  Ctrl+C → save snapshot & exit")
+
+        # Demo-only iterator — the normal merged iterator mixes the empty
+        # online buffer, which would error out in offline mode.
+        if use_cqn:
+            demo_iter = iter(demo_replay_loader)
+            def _demo_batch():
+                nonlocal demo_iter
+                try:
+                    return next(demo_iter)
+                except StopIteration:
+                    demo_iter = iter(demo_replay_loader)
+                    return next(demo_iter)
+        else:
+            total_bs = args.batch_size + args.demo_batch_size
+            def _demo_batch():
+                return demo_replay_buffer.sample(total_bs)
+
+        step = 0
+        try:
+            for step in range(1, args.num_train_steps + 1):
+                batch = _demo_batch()
+                if use_cqn:
+                    batch = utils.to_torch_pixel_tensor_dict(batch, args.device)
+                    agent.update(batch)
+                    agent.update_target_critic(step)
+                else:
+                    agent.update(batch, step)
+                if step % args.save_every == 0 or step == args.num_train_steps:
+                    save_snapshot(save_dir, agent, step, 0,
+                                  agent_type=args.agent)
+                    print(f"  [offline] step {step}/{args.num_train_steps} "
+                          f"— snapshot saved")
+        except KeyboardInterrupt:
+            print("\n  [EXIT] Ctrl+C — saving and exiting...")
+            save_snapshot(save_dir, agent, step, 0, agent_type=args.agent)
+        env.close()
+        print(f"\nOffline training complete. "
+              f"Run eval_real.py with --snapshot {save_dir}/snapshot.pt")
+        return
+
     print(f"Starting {args.agent.upper()} training for {args.num_train_steps} steps...")
     print("  Ctrl+X       → abort current episode & reset")
     print("  Ctrl+C       → save snapshot & exit")
