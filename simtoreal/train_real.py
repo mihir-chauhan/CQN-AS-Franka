@@ -304,6 +304,9 @@ def parse_args():
                         "no periodic eval. Robot is connected at startup "
                         "(needed for action spec) but never commanded to "
                         "move. Run eval_real.py separately to evaluate.")
+    p.add_argument("--log-every", type=int, default=100,
+                   help="Offline training: print a progress line every N "
+                        "update steps. Default 100. Set 0 to disable.")
 
     return p.parse_args()
 
@@ -948,6 +951,7 @@ def main():
                 return demo_replay_buffer.sample(total_bs)
 
         step = 0
+        t0 = time.time()
         try:
             for step in range(1, args.num_train_steps + 1):
                 batch = _demo_batch()
@@ -957,6 +961,12 @@ def main():
                     agent.update_target_critic(step)
                 else:
                     agent.update(batch, step)
+                if args.log_every and step % args.log_every == 0:
+                    elapsed = time.time() - t0
+                    rate = step / max(elapsed, 1e-6)
+                    eta = (args.num_train_steps - step) / max(rate, 1e-6)
+                    print(f"  [offline] step {step}/{args.num_train_steps} "
+                          f"({rate:.1f} steps/s, ETA {eta/60:.1f} min)")
                 if step % args.save_every == 0 or step == args.num_train_steps:
                     save_snapshot(save_dir, agent, step, 0,
                                   agent_type=args.agent)
