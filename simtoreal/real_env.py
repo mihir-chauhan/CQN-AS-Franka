@@ -237,6 +237,7 @@ class RealFrankaEnv:
         home_sequence: list | None = None,
         gripper_at_reset: str = "open",
         pause_for_human: bool = False,
+        freeze_gripper: bool = False,
     ):
         self._episode_length = episode_length
         self._frame_stack = frame_stack
@@ -263,6 +264,7 @@ class RealFrankaEnv:
             )
         self._gripper_at_reset = gripper_at_reset
         self._pause_for_human = bool(pause_for_human)
+        self._freeze_gripper = bool(freeze_gripper)
 
         # Camera layout — must match training config
         assert len(camera_rig.camera_keys) == NUM_CAMERAS, (
@@ -505,19 +507,20 @@ class RealFrankaEnv:
             self._robot.recover_from_errors()
             time.sleep(0.5)
 
-        # Gripper
-        if gripper_cmd > 0.5 and not self._gripper_is_open:
-            self._gripper.open(self._gripper_speed)
-            self._gripper_is_open = True
-        elif gripper_cmd <= 0.5 and self._gripper_is_open:
-            self._gripper.grasp(
-                0.0,
-                self._gripper_speed,
-                self._gripper_force,
-                epsilon_inner=1.0,
-                epsilon_outer=1.0,
-            )
-            self._gripper_is_open = False
+        # Gripper (agent-controlled unless frozen)
+        if not self._freeze_gripper:
+            if gripper_cmd > 0.5 and not self._gripper_is_open:
+                self._gripper.open(self._gripper_speed)
+                self._gripper_is_open = True
+            elif gripper_cmd <= 0.5 and self._gripper_is_open:
+                self._gripper.grasp(
+                    0.0,
+                    self._gripper_speed,
+                    self._gripper_force,
+                    epsilon_inner=1.0,
+                    epsilon_outer=1.0,
+                )
+                self._gripper_is_open = False
 
         self._step_counter += 1
 
@@ -540,6 +543,15 @@ class RealFrankaEnv:
         else:
             step_type = StepType.MID
         discount = float(1 - terminated)
+
+        # If gripper is frozen, auto-release at the end of the episode so
+        # the operator can retrieve the object before the next reset.
+        if self._freeze_gripper and step_type == StepType.LAST and not self._gripper_is_open:
+            try:
+                self._gripper.open(self._gripper_speed)
+                self._gripper_is_open = True
+            except Exception as e:
+                print(f"[RealFrankaEnv] End-of-episode gripper open failed: {e}")
 
         return TimeStep(
             rgb_obs=obs["rgb_obs"],
@@ -1221,6 +1233,7 @@ def make(
     home_sequence: list | None = None,
     gripper_at_reset: str = "open",
     pause_for_human: bool = False,
+    freeze_gripper: bool = False,
 ) -> ExtendedTimeStepWrapper:
     env = RealFrankaEnv(
         robot_ip=robot_ip,
@@ -1238,5 +1251,6 @@ def make(
         home_sequence=home_sequence,
         gripper_at_reset=gripper_at_reset,
         pause_for_human=pause_for_human,
+        freeze_gripper=freeze_gripper,
     )
     return ExtendedTimeStepWrapper(env)

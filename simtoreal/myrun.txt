@@ -368,6 +368,7 @@ python train_real.py \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --freeze-gripper \
     --control-hz 10 \
     --joint-delta-clip 0.05 \
     --velocity-factor 0.15 \
@@ -397,6 +398,7 @@ python train_real.py \
     --goal-pose goal_pose.json \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --freeze-gripper \
     --control-hz 10 \
     --joint-delta-clip 0.05 \
     --velocity-factor 0.15 \
@@ -422,6 +424,7 @@ python eval_real.py \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --freeze-gripper \
     --control-hz 10 \
     --joint-delta-clip 0.05 \
     --velocity-factor 0.15 \
@@ -440,6 +443,7 @@ python eval_real.py \
     --orbbec-serials '{"front":"CL25854009Y","wrist":"CL2E453000Y","left_shoulder":"CL2E4530083","right_shoulder":"CL25854007B"}' \
     --task-mode pick-place \
     --home-sequence partialhomepickplace.npy partialhome.npy pickuppose.npy \
+    --freeze-gripper \
     --control-hz 10 \
     --joint-delta-clip 0.05 \
     --velocity-factor 0.15 \

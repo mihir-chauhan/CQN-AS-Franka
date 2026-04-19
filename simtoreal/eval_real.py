@@ -138,6 +138,10 @@ def parse_args():
                    help="Skip the home sequence on the very first reset "
                         "(robot is assumed already at the starting pose). "
                         "Subsequent episode resets still home.")
+    p.add_argument("--freeze-gripper", action="store_true",
+                   help="Ignore the agent's gripper action dim during step(). "
+                        "Gripper is closed at reset (pick-place) and auto-"
+                        "opens when an episode ends.")
     p.add_argument("--joint-delta-clip", type=float, default=0.05)
     p.add_argument("--velocity-factor", type=float, default=0.15)
     p.add_argument("--gripper-speed", type=float, default=0.1)
@@ -428,6 +432,7 @@ def main():
         home_sequence=home_sequence,
         gripper_at_reset=gripper_at_reset,
         pause_for_human=pause_for_human,
+        freeze_gripper=args.freeze_gripper,
     )
 
     agent = make_agent_from_snapshot(env, args)

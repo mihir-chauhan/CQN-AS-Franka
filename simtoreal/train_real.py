@@ -180,6 +180,11 @@ def parse_args():
                    help="Skip the home sequence on the very first reset of "
                         "this run (robot is assumed to already be in the "
                         "starting pose). Subsequent resets still home.")
+    p.add_argument("--freeze-gripper", action="store_true",
+                   help="Ignore the agent's gripper action dim during step(). "
+                        "Gripper is closed at reset (pick-place) and auto-"
+                        "opens when an episode ends. Model is unchanged — "
+                        "its 8-th action dim is just not applied.")
     p.add_argument("--joint-delta-clip", type=float, default=0.25)
     p.add_argument("--velocity-factor", type=float, default=0.4)
 
@@ -687,6 +692,7 @@ def main():
         home_sequence=home_sequence,
         gripper_at_reset=gripper_at_reset,
         pause_for_human=pause_for_human,
+        freeze_gripper=args.freeze_gripper,
     )
 
     # ------------------------------------------------------------------
