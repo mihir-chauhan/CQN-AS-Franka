@@ -362,13 +362,17 @@ class RealFrankaEnv:
         if skip_home:
             print("[RealFrankaEnv] skip_home=True — skipping home sequence.")
 
-        # Open gripper BEFORE homing so the robot doesn't drag an object
+        # Open gripper BEFORE homing so the robot doesn't drag an object,
+        # and so the operator can load a new object during pause_for_human.
+        # Unconditional (don't trust tracked state — it can drift from reality).
         if not skip_home:
             self._robot.recover_from_errors()
-            if not self._gripper_is_open:
+            try:
                 self._gripper.open(self._gripper_speed)
-                self._gripper_is_open = True
-                time.sleep(0.3)
+            except Exception as e:
+                print(f"[RealFrankaEnv] Pre-home gripper open failed: {e}")
+            self._gripper_is_open = True
+            time.sleep(0.3)
             time.sleep(0.5)  # let robot settle
 
         # ---------- Run the configured home sequence ----------
@@ -408,22 +412,33 @@ class RealFrankaEnv:
         if self._pause_for_human:
             try:
                 input(
-                    "\n  >>> [pick-place] Place object in gripper and press "
-                    "Enter to start the episode... "
+                    "\n  >>> [pick-place] Gripper is OPEN. Place the object "
+                    "between the fingers and press Enter — gripper will "
+                    "close AFTER you press Enter. "
                 )
             except EOFError:
                 # Non-interactive stdin — proceed without pause.
                 print("[RealFrankaEnv] pause_for_human: stdin closed, continuing.")
+            # Tiny buffer so the operator can pull their hand clear of the
+            # fingers before the grasp fires.
+            time.sleep(0.4)
 
-        # ---------- Set final gripper state ----------
+        # ---------- Set final gripper state (AFTER the Enter press) ----------
         if self._gripper_at_reset == "closed":
-            self._gripper.grasp(
-                0.0, self._gripper_speed, self._gripper_force,
-                epsilon_inner=1.0, epsilon_outer=1.0,
-            )
+            print("[RealFrankaEnv] Closing gripper (grasp)...")
+            try:
+                self._gripper.grasp(
+                    0.0, self._gripper_speed, self._gripper_force,
+                    epsilon_inner=1.0, epsilon_outer=1.0,
+                )
+            except Exception as e:
+                print(f"[RealFrankaEnv] Gripper close failed: {e}")
             self._gripper_is_open = False
         else:
-            self._gripper.open(self._gripper_speed)
+            try:
+                self._gripper.open(self._gripper_speed)
+            except Exception as e:
+                print(f"[RealFrankaEnv] Gripper open failed: {e}")
             self._gripper_is_open = True
         time.sleep(0.5)  # settle
 
