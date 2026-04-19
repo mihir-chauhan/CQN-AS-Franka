@@ -487,8 +487,8 @@ python eval_real.py \
 python eval_real.py \
     --agent arsq \
     --use-fk-reg \
-    --snapshot ../runs/pick_drop_arsq_phys/snapshot.pt \
-    --action-stats ../runs/pick_drop_arsq_phys/action_stats.npz \
+    --snapshot ../runs/pick_drop_arsq_phys_offline/snapshot.pt \
+    --action-stats ../runs/pick_drop_arsq_phys_offline/action_stats.npz \
     --goal-pose goal_pose.json \
     --robot-ip 192.168.131.41 \
     --camera-mode orbbec \
@@ -500,8 +500,8 @@ python eval_real.py \
     --joint-delta-clip 0.05 \
     --velocity-factor 0.15 \
     --num-episodes 10 \
-    --results-dir ../runs/pick_drop_arsq_phys \
-    2>&1 | tee ../runs/pick_drop_arsq_phys/eval.log
+    --results-dir ../runs/pick_drop_arsq_phys_offline \
+    2>&1 | tee ../runs/pick_drop_arsq_phys_offline/eval.log
 
 
 # ── Compare ARSQ-base vs ARSQ+Physics on pick-drop ──
