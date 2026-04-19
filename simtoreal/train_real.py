@@ -656,6 +656,12 @@ def main():
     # ------------------------------------------------------------------
     print("=" * 60)
     print(f"Agent: {args.agent.upper()}")
+    # Offline training never reads live cameras — use dummy rig regardless of
+    # --camera-mode so we skip the real camera setup time / dependencies.
+    if args.offline and args.camera_mode != "dummy":
+        print(f"[offline] Overriding --camera-mode {args.camera_mode!r} → 'dummy' "
+              f"(live cameras not used during offline training).")
+        args.camera_mode = "dummy"
     print("Setting up cameras...")
     camera_rig = build_camera_rig(args)
 
