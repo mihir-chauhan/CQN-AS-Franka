@@ -40,9 +40,14 @@ Usage
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
+import select as _select
 import sys
+import termios
 import time
+import tty
 from pathlib import Path
 
 import numpy as np
@@ -468,13 +473,64 @@ def main():
     dt = 1.0 / args.control_hz
     results = []
 
-    for ep in range(args.num_episodes):
-        print(f"\n--- Episode {ep + 1}/{args.num_episodes} ---")
+    # Put stdin in cbreak + non-blocking mode so we can poll for SPACE
+    # (0x20) each step without blocking. Cooked mode is restored around
+    # env.reset() so blocking input() calls (pause_for_human) still work.
+    _stdin_fd = sys.stdin.fileno()
+    _stdin_is_tty = os.isatty(_stdin_fd)
+    if _stdin_is_tty:
+        _saved_term = termios.tcgetattr(_stdin_fd)
+        _saved_flags = fcntl.fcntl(_stdin_fd, fcntl.F_GETFL)
+    else:
+        _saved_term = None
+        _saved_flags = None
 
+    def _restore_stdin():
+        if _stdin_is_tty and _saved_term is not None:
+            termios.tcsetattr(_stdin_fd, termios.TCSADRAIN, _saved_term)
+            fcntl.fcntl(_stdin_fd, fcntl.F_SETFL, _saved_flags)
+
+    def _enable_cbreak_stdin():
+        if _stdin_is_tty and _saved_term is not None:
+            tty.setcbreak(_stdin_fd)
+            fcntl.fcntl(_stdin_fd, fcntl.F_SETFL, _saved_flags | os.O_NONBLOCK)
+
+    def _space_pressed() -> bool:
+        """Return True if space was pressed since the last call (drains buffer)."""
+        if not _stdin_is_tty:
+            return False
+        pressed = False
+        while True:
+            r, _, _ = _select.select([_stdin_fd], [], [], 0)
+            if not r:
+                break
+            try:
+                ch = os.read(_stdin_fd, 1)
+            except BlockingIOError:
+                break
+            if not ch:
+                break
+            if ch == b" ":
+                pressed = True
+        return pressed
+
+    try:
+      for ep in range(args.num_episodes):
+        print(f"\n--- Episode {ep + 1}/{args.num_episodes} ---")
+        print("  [hint] Press SPACE during the episode to abort early "
+              "(opens gripper, moves to next episode).")
+
+        # Reset needs cooked stdin so the pick-place pause's input() works.
+        _restore_stdin()
         time_step = env.reset(skip_home=(args.skip_initial_home and ep == 0))
+        _enable_cbreak_stdin()
+        # Drain any keys queued during reset so we don't spuriously abort.
+        _space_pressed()
+
         episode_step = 0
         episode_reward = 0.0
         video_frames = []
+        aborted_by_space = False
 
         if use_te:
             te = utils.TemporalEnsembleControl(
@@ -484,6 +540,12 @@ def main():
         action = None
 
         while not time_step.last():
+            if _space_pressed():
+                print(f"\n  [ABORT] SPACE pressed — ending episode at "
+                      f"step {episode_step}.")
+                aborted_by_space = True
+                break
+
             t0 = time.time()
 
             if use_cqn:
@@ -530,17 +592,28 @@ def main():
             if elapsed < dt:
                 time.sleep(dt - elapsed)
 
-        # Close gripper at end of episode (hold object for inspection)
-        print("  Closing gripper...")
-        real_env.close_gripper()
-        time.sleep(0.5)
+        # End-of-episode gripper handling:
+        #   - Aborted (SPACE): open gripper, skip success check, move on.
+        #   - Normal end: close gripper to hold object for inspection.
+        if aborted_by_space:
+            print("  Opening gripper (aborted)...")
+            real_env.open_gripper()
+            time.sleep(0.5)
+        else:
+            print("  Closing gripper...")
+            real_env.close_gripper()
+            time.sleep(0.5)
 
         print(
-            f"  Episode {ep + 1}: steps={episode_step}, reward={episode_reward:.3f}"
+            f"  Episode {ep + 1}: steps={episode_step}, "
+            f"reward={episode_reward:.3f}"
+            f"{' (aborted)' if aborted_by_space else ''}"
         )
 
-        # Success detection — auto or human
-        if goal_pose is not None:
+        # Success detection — auto or human. Aborted episodes are always fail.
+        if aborted_by_space:
+            success = False
+        elif goal_pose is not None:
             success = _check_success(
                 real_env, goal_pose,
                 args.success_pos_thresh, args.success_quat_thresh,
@@ -552,6 +625,7 @@ def main():
             "steps": episode_step,
             "reward": episode_reward,
             "success": success,
+            "aborted": aborted_by_space,
         })
 
         # Save video
@@ -572,6 +646,10 @@ def main():
                 print(f"  Saved video: {video_path}")
             except ImportError:
                 print("  [WARN] cv2 not available, skipping video save")
+    finally:
+        # Always restore the terminal to cooked mode on exit (normal,
+        # KeyboardInterrupt, or unexpected exception).
+        _restore_stdin()
 
     # ------------------------------------------------------------------
     # Summary

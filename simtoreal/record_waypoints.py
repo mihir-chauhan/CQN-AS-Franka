@@ -147,6 +147,7 @@ def main():
     save_dir = Path(args.save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
 
+
     print(f"Connecting to robot at {args.robot_ip}...")
     robot = Robot(args.robot_ip)
     gripper = Gripper(args.robot_ip)
